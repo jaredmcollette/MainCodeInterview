@@ -14,13 +14,13 @@ import structlog
 
 @dataclass
 class Hyperparameters:
-    block_size: int = 128
+    block_size: int = 256
     batch_size: int = 64
     vocab_size: int = 16_000
     n_layer: int = 6
     n_head: int = 8
     d_model: int = 512
-    dropout: float = 0.1
+    dropout: float = 0.2
     lr: float = 6e-3
     weight_decay: float = 0.0
     evals_per_epoch: int = 3
@@ -99,6 +99,16 @@ def iter_full_split(split_ids: torch.Tensor, block_size: int, batch_size: int, d
         x = batch[:-1].view(batch_size, block_size).to(device)
         y = batch[1:].view(batch_size, block_size).to(device)
         yield x, y
+
+# # TODO: 
+# device = "cuda" if torch.cuda.is_available() else "cpu"
+# def get_sinusoidal_pos_emb(block_size, d_model, device=device):
+#     pe = torch.zeros(block_size, d_model, device=device)
+#     position = torch.arange(0, block_size, dtype=torch.float).unsqueeze(1)
+#     div_term = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float) * -(math.log(10000.0) / d_model))
+#     pe[:, 0::2] = torch.sin(position * div_term)
+#     pe[:, 1::2] = torch.cos(position * div_term)
+#     return pe.unsqueeze(0)  # shape (1, block_size, d_model)
 
 def train_tokenizer(titles: list[str], vocab_size: int, unk_token: str = "<unk>", pad_token: str = "<pad>", eos_token: str = "<eos>") -> Tokenizer:
     tokenizer = Tokenizer(models.BPE(unk_token=unk_token))
@@ -187,6 +197,7 @@ class GPT(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.token_emb = nn.Embedding(cfg.vocab_size, cfg.d_model)
+        # self.register_buffer('pos_emb', get_sinusoidal_pos_emb(cfg.block_size, cfg.d_model))
         self.pos_emb   = nn.Parameter(torch.zeros(1, cfg.block_size, cfg.d_model))
         self.drop      = nn.Dropout(cfg.dropout)
         self.blocks    = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layer)])
@@ -262,8 +273,19 @@ def main():
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
     
-    opt = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max_steps)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max_steps)
+
+    # OneCycleLR scheduler
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer=opt,
+        max_lr=args.lr,            # peak learning rate
+        total_steps=max_steps,     # total steps in training
+        pct_start=0.1,             # fraction of steps for warmup
+        anneal_strategy='cos',     # cosine annealing
+        div_factor=25.0,           # initial LR = max_lr / div_factor
+        final_div_factor=1e4       # final LR = initial LR / final_div_factor
+    )
 
     def evaluate():
         model.eval()
