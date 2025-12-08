@@ -17,7 +17,7 @@ class Hyperparameters:
     block_size: int = 256
     batch_size: int = 64
     vocab_size: int = 16_000
-    n_layer: int = 4 # Better loss at 8 layers, but keep low for quicker testing
+    n_layer: int = 4
     n_head: int = 8
     d_model: int = 512
     dropout: float = 0.0
@@ -36,7 +36,7 @@ class Hyperparameters:
     log_file: str = "./logs/mainrun.log"
 
 class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-5):
+    def __init__(self, dim: int, eps: float = 1e-8):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
