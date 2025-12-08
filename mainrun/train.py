@@ -21,8 +21,8 @@ class Hyperparameters:
     n_head: int = 8
     d_model: int = 512
     dropout: float = 0.2
-    lr: float = 1e-3
-    pct_start: float = 0.2
+    lr: float = 3e-4
+    pct_start: float = 0.3
     div_factor: float = 5.0
     final_div_factor: float = 100.0
     weight_decay: float = 0.1
@@ -298,7 +298,7 @@ def main():
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
     
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.95))
 
     # OneCycleLR scheduler
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
