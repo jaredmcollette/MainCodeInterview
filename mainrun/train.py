@@ -188,8 +188,8 @@ class MLP(nn.Module):
 class Block(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
-        self.ln1 = nn.RMSNorm(cfg.d_model)
-        self.ln2 = nn.RMSNorm(cfg.d_model)
+        self.ln1 = nn.LayerNorm(cfg.d_model)
+        self.ln2 = nn.LayerNorm(cfg.d_model)
         self.attn = CausalSelfAttention(cfg)
         self.mlp  = MLP(cfg)
     def forward(self, x):
@@ -206,7 +206,7 @@ class GPT(nn.Module):
         self.pos_emb   = nn.Parameter(torch.zeros(1, cfg.block_size, cfg.d_model))
         self.drop      = nn.Dropout(cfg.dropout)
         self.blocks    = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layer)])
-        self.ln_f      = nn.RMSNorm(cfg.d_model)
+        self.ln_f      = nn.LayerNorm(cfg.d_model)
         self.head      = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
 
         self.apply(self._init_weights)
