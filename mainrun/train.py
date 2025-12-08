@@ -244,6 +244,32 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     freqs_sin = torch.sin(freqs)
     return freqs_cos, freqs_sin
 
+def apply_rotary_emb(xq, xk, freqs_cos, freqs_sin):
+    # reshape xq, xk for broadcasting: [B, T, n_head, head_dim] -> [B, T, n_head, head_dim//2, 2]
+    B, T, H, D = xq.shape
+    xq_r = xq.view(B, T, H, D // 2, 2)
+    xk_r = xk.view(B, T, H, D // 2, 2)
+    
+    # Separate real and imaginary parts (treating last dim as real/imag)
+    xq_r_re, xq_r_im = xq_r.unbind(-1)
+    xk_r_re, xk_r_im = xk_r.unbind(-1)
+    
+    # Reshape freqs for broadcasting: [T, D//2] -> [1, T, 1, D//2]
+    cos = freqs_cos[:T].view(1, T, 1, D // 2)
+    sin = freqs_sin[:T].view(1, T, 1, D // 2)
+    
+    # Apply rotation
+    xq_out_re = xq_r_re * cos - xq_r_im * sin
+    xq_out_im = xq_r_re * sin + xq_r_im * cos
+    xk_out_re = xk_r_re * cos - xk_r_im * sin
+    xk_out_im = xk_r_re * sin + xk_r_im * cos
+    
+    # Stack back and flatten
+    xq_out = torch.stack([xq_out_re, xq_out_im], dim=-1).view(B, T, H, D)
+    xk_out = torch.stack([xk_out_re, xk_out_im], dim=-1).view(B, T, H, D)
+    
+    return xq_out, xk_out
+
 class GPT(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
