@@ -226,8 +226,8 @@ class Block(nn.Module):
         self.ln2 = RMSNorm(cfg.d_model)
         self.attn = CausalSelfAttention(cfg)
         self.mlp  = MLP(cfg)
-    def forward(self, x):
-        x = x + self.attn(self.ln1(x))
+     def forward(self, x, freqs_cos, freqs_sin):
+        x = x + self.attn(self.ln1(x), freqs_cos, freqs_sin)
         x = x + self.mlp(self.ln2(x))
         return x
 
