@@ -169,12 +169,6 @@ class CausalSelfAttention(nn.Module):
         # Standard Flash Attention
         y = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop if self.training else 0, is_causal=True)
 
-        # att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        # att = att.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
-        # att = F.softmax(att, dim=-1)
-        # att = self.attn_drop(att)
-        # y = att @ v
-
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         return self.resid_drop(self.proj(y))
 
@@ -209,21 +203,6 @@ class MLP(nn.Module):
         x = self.c_proj(x)
         x = self.dropout(x)
         return x
-
-# class MLP(nn.Module):
-#     def __init__(self, cfg: GPTConfig):
-#         super().__init__()
-
-#         hidden_dim = int(cfg.d_model * cfg.expansion_factor)
-#         hidden_dim = 64  * ((hidden_dim + 64  - 1) // 64)
-
-#         self.net = nn.Sequential(
-#             nn.Linear(cfg.d_model, hidden_dim),
-#             nn.GELU(),
-#             nn.Linear(hidden_dim, cfg.d_model),
-#             nn.Dropout(cfg.dropout),
-#         )
-#     def forward(self, x): return self.net(x)
 
 class Block(nn.Module):
     def __init__(self, cfg: GPTConfig):
@@ -275,7 +254,7 @@ class GPT(nn.Module):
         ]
         
         # Create AdamW optimizer
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas)
+        optimizer = Lion(optim_groups, lr=learning_rate, betas=betas)
         return optimizer
 
     def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
@@ -291,6 +270,70 @@ class GPT(nn.Module):
         else:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
         return logits, loss
+
+class Lion(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-4, betas=(0.9, 0.95), eps=1e-5, weight_decay=0):
+        if not 0.0 <= lr:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if not 0.0 <= eps:
+            raise ValueError(f"Invalid epsilon value: {eps}")
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError(f"Invalid beta parameter: {betas[0]}")
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError(f"Invalid beta parameter: {betas[1]}")
+        if not 0.0 <= weight_decay:
+            raise ValueError(f"Invalid weight_decay value: {weight_decay}")
+
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            lr = group["lr"]
+            beta1, _ = group["betas"]  # Only beta1 used
+            eps = group["eps"]
+            wd = group["weight_decay"]
+
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                grad = p.grad
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state["exp_avg"] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                    state["step"] = torch.zeros_like(p, memory_format=torch.preserve_format, dtype=torch.long)
+
+                exp_avg = state["exp_avg"]
+                step = state["step"]
+
+                # Update step
+                step.add_(1)
+
+                # Decay the momentum running average coefficient
+                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+
+                # Weight decay (decoupled)
+                if wd != 0:
+                    p.mul_(1 - lr * wd)
+
+                # Normalized sign update
+                update = exp_avg.clone()
+                denom = (update.abs() + eps).sqrt()
+                update.div_(denom)
+                update.sign_()
+
+                # Apply update
+                p.add_(update, alpha=-lr)
+
+        return loss
 
 def main():
     args = Hyperparameters()
