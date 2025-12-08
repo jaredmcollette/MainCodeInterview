@@ -22,7 +22,7 @@ class Hyperparameters:
     d_model: int = 512
     dropout: float = 0.2
     lr: float = 1e-3
-    weight_decay: float = 0.0
+    weight_decay: float = 0.1
     evals_per_epoch: int = 3
     mlp_hidden_layer_size: int = 6
     
