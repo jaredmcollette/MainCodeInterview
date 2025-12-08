@@ -17,7 +17,7 @@ class Hyperparameters:
     block_size: int = 256
     batch_size: int = 64
     vocab_size: int = 16_000
-    n_layer: int = 8
+    n_layer: int = 4 # Better loss at 8 layers, but keep low for quicker testing
     n_head: int = 8
     d_model: int = 512
     dropout: float = 0.0
@@ -254,7 +254,7 @@ class GPT(nn.Module):
         ]
         
         # Create AdamW optimizer
-        optimizer = Lion(optim_groups, lr=learning_rate, betas=betas)
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas)
         return optimizer
 
     def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
@@ -270,70 +270,6 @@ class GPT(nn.Module):
         else:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
         return logits, loss
-
-class Lion(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-4, betas=(0.9, 0.95), eps=1e-5, weight_decay=0):
-        if not 0.0 <= lr:
-            raise ValueError(f"Invalid learning rate: {lr}")
-        if not 0.0 <= eps:
-            raise ValueError(f"Invalid epsilon value: {eps}")
-        if not 0.0 <= betas[0] < 1.0:
-            raise ValueError(f"Invalid beta parameter: {betas[0]}")
-        if not 0.0 <= betas[1] < 1.0:
-            raise ValueError(f"Invalid beta parameter: {betas[1]}")
-        if not 0.0 <= weight_decay:
-            raise ValueError(f"Invalid weight_decay value: {weight_decay}")
-
-        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
-        super().__init__(params, defaults)
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        loss = None
-        if closure is not None:
-            with torch.enable_grad():
-                loss = closure()
-
-        for group in self.param_groups:
-            lr = group["lr"]
-            beta1, _ = group["betas"]  # Only beta1 used
-            eps = group["eps"]
-            wd = group["weight_decay"]
-
-            for p in group["params"]:
-                if p.grad is None:
-                    continue
-                grad = p.grad
-                state = self.state[p]
-
-                # State initialization
-                if len(state) == 0:
-                    state["exp_avg"] = torch.zeros_like(p, memory_format=torch.preserve_format)
-                    state["step"] = torch.zeros_like(p, memory_format=torch.preserve_format, dtype=torch.long)
-
-                exp_avg = state["exp_avg"]
-                step = state["step"]
-
-                # Update step
-                step.add_(1)
-
-                # Decay the momentum running average coefficient
-                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
-
-                # Weight decay (decoupled)
-                if wd != 0:
-                    p.mul_(1 - lr * wd)
-
-                # Normalized sign update
-                update = exp_avg.clone()
-                denom = (update.abs() + eps).sqrt()
-                update.div_(denom)
-                update.sign_()
-
-                # Apply update
-                p.add_(update, alpha=-lr)
-
-        return loss
 
 def main():
     args = Hyperparameters()
