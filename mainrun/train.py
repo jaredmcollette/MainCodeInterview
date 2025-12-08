@@ -161,19 +161,21 @@ class CausalSelfAttention(nn.Module):
         self.resid_drop= nn.Dropout(cfg.dropout)
         self.register_buffer("tril", torch.tril(torch.ones(cfg.block_size, cfg.block_size)))
 
-    def forward(self, x: torch.Tensor, freqs_cos: torch.Tensor, freqs_sin: torch.Tensor):
+    def forward(self, x: torch.Tensor):
         B, T, C = x.size()
         qkv = self.qkv(x).view(B, T, 3, self.n_head, self.head_dim).transpose(1, 3)
         q, k, v = qkv[..., 0, :, :], qkv[..., 1, :, :], qkv[..., 2, :, :]
 
-        # Apply RoPE
-        q, k = apply_rotary_emb(q, k, freqs_cos, freqs_sin)
+        # Use efficient Flash Attention
+        # is_causal=True handles the masking automatically
+        y = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0, is_causal=True)
 
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
-        att = F.softmax(att, dim=-1)
-        att = self.attn_drop(att)
-        y = att @ v
+        # att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        # att = att.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
+        # att = F.softmax(att, dim=-1)
+        # att = self.attn_drop(att)
+        # y = att @ v
+
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         return self.resid_drop(self.proj(y))
 
@@ -230,72 +232,24 @@ class Block(nn.Module):
         self.ln2 = RMSNorm(cfg.d_model)
         self.attn = CausalSelfAttention(cfg)
         self.mlp  = MLP(cfg)
-
-    def forward(self, x, freqs_cos, freqs_sin):
-        x = x + self.attn(self.ln1(x), freqs_cos, freqs_sin)
+    def forward(self, x):
+        x = x + self.attn(self.ln1(x))
         x = x + self.mlp(self.ln2(x))
         return x
-
-def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    t = torch.arange(end, device=freqs.device)
-    freqs = torch.outer(t, freqs).float()
-    freqs_cos = torch.cos(freqs)
-    freqs_sin = torch.sin(freqs)
-    return freqs_cos, freqs_sin
-
-def apply_rotary_emb(xq, xk, freqs_cos, freqs_sin):
-    # reshape xq, xk for broadcasting: [B, T, n_head, head_dim] -> [B, T, n_head, head_dim//2, 2]
-    B, T, H, D = xq.shape
-    xq_r = xq.view(B, T, H, D // 2, 2)
-    xk_r = xk.view(B, T, H, D // 2, 2)
-    
-    # Separate real and imaginary parts (treating last dim as real/imag)
-    xq_r_re, xq_r_im = xq_r.unbind(-1)
-    xk_r_re, xk_r_im = xk_r.unbind(-1)
-    
-    # Reshape freqs for broadcasting: [T, D//2] -> [1, T, 1, D//2]
-    cos = freqs_cos[:T].view(1, T, 1, D // 2)
-    sin = freqs_sin[:T].view(1, T, 1, D // 2)
-    
-    # Apply rotation
-    xq_out_re = xq_r_re * cos - xq_r_im * sin
-    xq_out_im = xq_r_re * sin + xq_r_im * cos
-    xk_out_re = xk_r_re * cos - xk_r_im * sin
-    xk_out_im = xk_r_re * sin + xk_r_im * cos
-    
-    # Stack back and flatten
-    xq_out = torch.stack([xq_out_re, xq_out_im], dim=-1).view(B, T, H, D)
-    xk_out = torch.stack([xk_out_re, xk_out_im], dim=-1).view(B, T, H, D)
-    
-    return xq_out, xk_out
 
 class GPT(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
         self.cfg = cfg
         self.token_emb = nn.Embedding(cfg.vocab_size, cfg.d_model)
-        # Note: self.pos_emb is removed because we are using RoPE in the attention layer
-        # self.pos_emb   = nn.Parameter(torch.zeros(1, cfg.block_size, cfg.d_model))
+        self.pos_emb   = nn.Parameter(torch.zeros(1, cfg.block_size, cfg.d_model))
         self.drop      = nn.Dropout(cfg.dropout)
         self.blocks    = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layer)])
         self.ln_f      = RMSNorm(cfg.d_model)
         self.head      = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
 
         self.apply(self._init_weights)
-
-        # 2. Apply special scaling to residual projections (Optimization for deeper nets)
-        # We target the output projection of Attention and MLP
-        # for pn, p in self.named_parameters():
-        #     if pn.endswith('c_proj.weight') or pn.endswith('proj.weight'):
-        #         torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * cfg.n_layer))
-
         self.head.weight = self.token_emb.weight
-
-        # Precompute RoPE frequencies
-        freqs_cos, freqs_sin = precompute_freqs_cis(cfg.d_model // cfg.n_head, cfg.block_size)
-        self.register_buffer("freqs_cos", freqs_cos)
-        self.register_buffer("freqs_sin", freqs_sin)
 
     @staticmethod
     def _init_weights(module):
@@ -307,11 +261,9 @@ class GPT(nn.Module):
     def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
         B, T = idx.size()
         tok = self.token_emb(idx)
-        # pos = self.pos_emb[:, :T, :]
-        x = self.drop(tok)
-
-        # Pass RoPE frequencies to blocks
-        for block in self.blocks: x = block(x, self.freqs_cos, self.freqs_sin)
+        pos = self.pos_emb[:, :T, :]
+        x = self.drop(tok + pos)
+        for block in self.blocks: x = block(x)
         x = self.ln_f(x)
         logits = self.head(x)
         if targets is None:
