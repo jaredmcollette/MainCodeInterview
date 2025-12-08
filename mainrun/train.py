@@ -269,7 +269,8 @@ class GPT(nn.Module):
         if targets is None:
             loss = None
         else:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
+            # label_smoothing=0.1 helps prevent overfitting on small/noisy datasets
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean', label_smoothing=0.1)
         return logits, loss
 
 def main():
