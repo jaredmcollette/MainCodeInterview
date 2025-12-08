@@ -22,9 +22,9 @@ class Hyperparameters:
     d_model: int = 512
     dropout: float = 0.2
     lr: float = 1e-3
-    pct_start: float = 0.2  # fraction of steps for warmup
-    div_factor: float = 5.0 # initial LR = max_lr / div_factor
-    final_div_factor: float = 100.0 # final LR = initial LR / final_div_factor
+    pct_start: float = 0.2
+    div_factor: float = 5.0
+    final_div_factor: float = 100.0
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
     mlp_hidden_layer_size: int = 6
@@ -34,6 +34,15 @@ class Hyperparameters:
     num_titles: int = 100_000
     val_frac: float = 0.10
     log_file: str = "./logs/mainrun.log"
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-5):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
 
 def configure_logging(log_file: str):
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
@@ -103,16 +112,6 @@ def iter_full_split(split_ids: torch.Tensor, block_size: int, batch_size: int, d
         x = batch[:-1].view(batch_size, block_size).to(device)
         y = batch[1:].view(batch_size, block_size).to(device)
         yield x, y
-
-# # TODO: 
-# device = "cuda" if torch.cuda.is_available() else "cpu"
-# def get_sinusoidal_pos_emb(block_size, d_model, device=device):
-#     pe = torch.zeros(block_size, d_model, device=device)
-#     position = torch.arange(0, block_size, dtype=torch.float).unsqueeze(1)
-#     div_term = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float) * -(math.log(10000.0) / d_model))
-#     pe[:, 0::2] = torch.sin(position * div_term)
-#     pe[:, 1::2] = torch.cos(position * div_term)
-#     return pe.unsqueeze(0)  # shape (1, block_size, d_model)
 
 def train_tokenizer(titles: list[str], vocab_size: int, unk_token: str = "<unk>", pad_token: str = "<pad>", eos_token: str = "<eos>") -> Tokenizer:
     tokenizer = Tokenizer(models.BPE(unk_token=unk_token))
@@ -188,8 +187,8 @@ class MLP(nn.Module):
 class Block(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
-        self.ln1 = nn.LayerNorm(cfg.d_model)
-        self.ln2 = nn.LayerNorm(cfg.d_model)
+        self.ln1 = RMSNorm(cfg.d_model)
+        self.ln2 = RMSNorm(cfg.d_model)
         self.attn = CausalSelfAttention(cfg)
         self.mlp  = MLP(cfg)
     def forward(self, x):
@@ -202,11 +201,10 @@ class GPT(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.token_emb = nn.Embedding(cfg.vocab_size, cfg.d_model)
-        # self.register_buffer('pos_emb', get_sinusoidal_pos_emb(cfg.block_size, cfg.d_model))
         self.pos_emb   = nn.Parameter(torch.zeros(1, cfg.block_size, cfg.d_model))
         self.drop      = nn.Dropout(cfg.dropout)
         self.blocks    = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layer)])
-        self.ln_f      = nn.LayerNorm(cfg.d_model)
+        self.ln_f      = RMSNorm(cfg.d_model)
         self.head      = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
 
         self.apply(self._init_weights)
@@ -280,7 +278,6 @@ def main():
     logger.log("model_info", parameters_count=model_params)
     
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max_steps)
 
     # OneCycleLR scheduler
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
