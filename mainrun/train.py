@@ -27,7 +27,7 @@ class Hyperparameters:
     final_div_factor: float = 100.0
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
-    mlp_hidden_layer_size: int = 6
+    mlp_hidden_layer_size: int = 4
     
     epochs: int = 7
     seed: int = 1337
