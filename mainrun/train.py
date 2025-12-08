@@ -27,7 +27,7 @@ class Hyperparameters:
     final_div_factor: float = 100.0
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
-    expansion_factor: float = 8/3
+    expansion_factor: float = 6
     
     epochs: int = 7
     seed: int = 1337
@@ -185,25 +185,39 @@ def get_hidden_dim(d_model: int, multiplier: float, multiple_of: int = 64) -> in
     return hidden_dim
 
 # SwiGLU MLP Implementation
+# class MLP(nn.Module):
+#     def __init__(self, cfg: GPTConfig):
+#         super().__init__()
+#         # In SwiGLU, we project to hidden_dim twice (gate and value), then project back.
+#         hidden_dim = get_hidden_dim(cfg.d_model, cfg.expansion_factor, multiple_of=64)
+        
+#         self.w1 = nn.Linear(cfg.d_model, hidden_dim, bias=False) # Gate
+#         self.w2 = nn.Linear(cfg.d_model, hidden_dim, bias=False) # Value
+#         self.c_proj = nn.Linear(hidden_dim, cfg.d_model, bias=False) # Output
+        
+#         self.dropout = nn.Dropout(cfg.dropout)
+
+#     def forward(self, x):
+#         # F.silu is the Swish activation function
+#         # Logic: (Swish(Gate) * Value) -> Output
+#         x = F.silu(self.w1(x)) * self.w2(x)
+#         x = self.c_proj(x)
+#         x = self.dropout(x)
+#         return x
+
 class MLP(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
-        # In SwiGLU, we project to hidden_dim twice (gate and value), then project back.
-        hidden_dim = get_hidden_dim(cfg.d_model, cfg.expansion_factor, multiple_of=64)
-        
-        self.w1 = nn.Linear(cfg.d_model, hidden_dim, bias=False) # Gate
-        self.w2 = nn.Linear(cfg.d_model, hidden_dim, bias=False) # Value
-        self.c_proj = nn.Linear(hidden_dim, cfg.d_model, bias=False) # Output
-        
-        self.dropout = nn.Dropout(cfg.dropout)
 
-    def forward(self, x):
-        # F.silu is the Swish activation function
-        # Logic: (Swish(Gate) * Value) -> Output
-        x = F.silu(self.w1(x)) * self.w2(x)
-        x = self.c_proj(x)
-        x = self.dropout(x)
-        return x
+        hidden_dim = get_hidden_dim(cfg.d_model, cfg.expansion_factor, multiple_of=64)
+
+        self.net = nn.Sequential(
+            nn.Linear(cfg.d_model, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, cfg.d_model),
+            nn.Dropout(cfg.dropout),
+        )
+    def forward(self, x): return self.net(x)
 
 class Block(nn.Module):
     def __init__(self, cfg: GPTConfig):
