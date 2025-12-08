@@ -22,6 +22,9 @@ class Hyperparameters:
     d_model: int = 512
     dropout: float = 0.2
     lr: float = 1e-3
+    pct_start: float = 0.2,  # fraction of steps for warmup
+    div_factor: float = 5.0, # initial LR = max_lr / div_factor
+    final_div_factor: float = 100.0 # final LR = initial LR / final_div_factor
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
     mlp_hidden_layer_size: int = 6
@@ -280,15 +283,23 @@ def main():
     # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max_steps)
 
     # OneCycleLR scheduler
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer=opt,
-        max_lr=args.lr,            # peak learning rate
-        total_steps=max_steps,     # total steps in training
-        pct_start=0.2,             # fraction of steps for warmup
-        anneal_strategy='cos',     # cosine annealing
-        div_factor=5.0,           # initial LR = max_lr / div_factor
-        final_div_factor=100.0       # final LR = initial LR / final_div_factor
-    )
+    # scheduler = torch.optim.lr_scheduler.OneCycleLR(
+    #     optimizer=opt,
+    #     max_lr=args.lr,
+    #     total_steps=max_steps,
+    #     pct_start=args.pct_start,              
+    #     anneal_strategy='cos',
+    #     div_factor=args.div_factor,             
+    #     final_div_factor=args.final_div_factor 
+    # )
+
+    # Warm Restarts scheduler
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+    opt,
+    T_0=batches,         # one restart every epoch
+    T_mult=2,            # each restart doubles the cycle length
+    eta_min=args.lr / 50 # your final-div-factor-ish minimum LR
+)
 
     def evaluate():
         model.eval()
