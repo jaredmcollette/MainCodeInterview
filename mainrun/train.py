@@ -277,7 +277,7 @@ class GPT(nn.Module):
         B, T = idx.size()
         tok = self.token_emb(idx)
         # pos = self.pos_emb[:, :T, :]
-        x = self.drop(tok + pos)
+        x = self.drop(tok)
 
         # Pass RoPE frequencies to blocks
         for block in self.blocks: x = block(x, self.freqs_cos, self.freqs_sin)
