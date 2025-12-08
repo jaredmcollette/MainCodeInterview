@@ -293,14 +293,6 @@ def main():
         final_div_factor=args.final_div_factor 
     )
 
-    # Warm Restarts scheduler
-#     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-#     opt,
-#     T_0=batches,         # one restart every epoch
-#     T_mult=2,            # each restart doubles the cycle length
-#     eta_min=args.lr / 50 # your final-div-factor-ish minimum LR
-# )
-
     def evaluate():
         model.eval()
         losses = 0.0
