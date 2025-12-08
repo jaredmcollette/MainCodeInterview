@@ -27,7 +27,7 @@ class Hyperparameters:
     final_div_factor: float = 100.0
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
-    mlp_hidden_layer_size: int = 4
+    expansion_factor: float = 8/3
     
     epochs: int = 7
     seed: int = 1337
@@ -147,7 +147,7 @@ class GPTConfig:
     n_head: int
     d_model: int
     dropout: float
-    mlp_hidden_layer_size: int
+    expansion_factor: float
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
@@ -173,12 +173,23 @@ class CausalSelfAttention(nn.Module):
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         return self.resid_drop(self.proj(y))
 
+# Originally from Llama
+def get_hidden_dim(d_model: int, multiplier: float, multiple_of: int = 64) -> int:
+    """
+    Calculates the hidden dimension size.
+    It applies the multiplier and rounds up to the nearest multiple of 'multiple_of'
+    for hardware efficiency.
+    """
+    hidden_dim = int(d_model * multiplier)
+    hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
+    return hidden_dim
+
 # SwiGLU MLP Implementation
 class MLP(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
         # In SwiGLU, we project to hidden_dim twice (gate and value), then project back.
-        hidden_dim = cfg.d_model * cfg.mlp_hidden_layer_size
+        hidden_dim = get_hidden_dim(cfg.d_model, cfg.expansion_factor, multiple_of=64)
         
         self.w1 = nn.Linear(cfg.d_model, hidden_dim, bias=False) # Gate
         self.w2 = nn.Linear(cfg.d_model, hidden_dim, bias=False) # Value
@@ -281,7 +292,7 @@ def main():
         n_head     = args.n_head,
         d_model    = args.d_model,
         dropout    = args.dropout,
-        mlp_hidden_layer_size = args.mlp_hidden_layer_size
+        expansion_factor = args.expansion_factor
     )
     model = GPT(cfg).to(device)
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
