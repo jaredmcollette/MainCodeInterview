@@ -24,6 +24,7 @@ class Hyperparameters:
     lr: float = 1e-3
     weight_decay: float = 0.0
     evals_per_epoch: int = 3
+    mlp_hidden_layer_size: int = 6
     
     epochs: int = 7
     seed: int = 1337
@@ -173,9 +174,9 @@ class MLP(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(cfg.d_model, 4 * cfg.d_model),
+            nn.Linear(cfg.d_model, mlp_hidden_layer_size * cfg.d_model),
             nn.GELU(),
-            nn.Linear(4 * cfg.d_model, cfg.d_model),
+            nn.Linear(mlp_hidden_layer_size * cfg.d_model, cfg.d_model),
             nn.Dropout(cfg.dropout),
         )
     def forward(self, x): return self.net(x)
