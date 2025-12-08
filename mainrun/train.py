@@ -22,8 +22,8 @@ class Hyperparameters:
     d_model: int = 512
     dropout: float = 0.2
     lr: float = 1e-3
-    pct_start: float = 0.2,  # fraction of steps for warmup
-    div_factor: float = 5.0, # initial LR = max_lr / div_factor
+    pct_start: float = 0.2  # fraction of steps for warmup
+    div_factor: float = 5.0 # initial LR = max_lr / div_factor
     final_div_factor: float = 100.0 # final LR = initial LR / final_div_factor
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
