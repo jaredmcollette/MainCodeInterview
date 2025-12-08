@@ -145,6 +145,7 @@ class GPTConfig:
     n_head: int
     d_model: int
     dropout: float
+    mlp_hidden_layer_size: int
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
