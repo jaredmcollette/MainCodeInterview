@@ -174,9 +174,9 @@ class MLP(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(cfg.d_model, mlp_hidden_layer_size * cfg.d_model),
+            nn.Linear(cfg.d_model, cfg.mlp_hidden_layer_size * cfg.d_model),
             nn.GELU(),
-            nn.Linear(mlp_hidden_layer_size * cfg.d_model, cfg.d_model),
+            nn.Linear(cfg.mlp_hidden_layer_size * cfg.d_model, cfg.d_model),
             nn.Dropout(cfg.dropout),
         )
     def forward(self, x): return self.net(x)
@@ -269,6 +269,7 @@ def main():
         n_head     = args.n_head,
         d_model    = args.d_model,
         dropout    = args.dropout,
+        mlp_hidden_layer_size = args.mlp_hidden_layer_size
     )
     model = GPT(cfg).to(device)
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
