@@ -233,24 +233,6 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
         return logits, loss
 
-class SlantedTriangularLR(torch.optim.lr_scheduler._LRScheduler):
-    def __init__(self, optimizer, max_lr, total_steps, cut_frac=0.1, ratio=32, last_epoch=-1):
-        self.max_lr = max_lr
-        self.total_steps = total_steps
-        self.cut_frac = cut_frac
-        self.cut = int(total_steps * cut_frac)
-        self.ratio = ratio
-        super().__init__(optimizer, last_epoch)
-
-    def get_lr(self):
-        step = self.last_epoch
-        if step < self.cut:
-            scale = step / self.cut
-        else:
-            scale = 1 - (step - self.cut) / (self.total_steps - self.cut)
-        return [self.max_lr * (1 + scale * (self.ratio - 1)) / self.ratio
-                for base_lr in self.base_lrs]
-
 def main():
     args = Hyperparameters()
     torch.manual_seed(args.seed)
@@ -310,12 +292,6 @@ def main():
         div_factor=args.div_factor,             
         final_div_factor=args.final_div_factor 
     )
-
-
-
-    # scheduler = SlantedTriangularLR(opt, max_lr=args.lr, total_steps=max_steps)
-
-
 
     # Warm Restarts scheduler
 #     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
