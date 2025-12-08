@@ -284,10 +284,10 @@ def main():
         optimizer=opt,
         max_lr=args.lr,            # peak learning rate
         total_steps=max_steps,     # total steps in training
-        pct_start=0.1,             # fraction of steps for warmup
+        pct_start=0.2,             # fraction of steps for warmup
         anneal_strategy='cos',     # cosine annealing
-        div_factor=100.0,           # initial LR = max_lr / div_factor
-        final_div_factor=1e4       # final LR = initial LR / final_div_factor
+        div_factor=5.0,           # initial LR = max_lr / div_factor
+        final_div_factor=100.0       # final LR = initial LR / final_div_factor
     )
 
     def evaluate():
