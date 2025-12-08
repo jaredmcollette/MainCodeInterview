@@ -166,8 +166,7 @@ class CausalSelfAttention(nn.Module):
         qkv = self.qkv(x).view(B, T, 3, self.n_head, self.head_dim).transpose(1, 3)
         q, k, v = qkv[..., 0, :, :], qkv[..., 1, :, :], qkv[..., 2, :, :]
 
-        # Use efficient Flash Attention
-        # is_causal=True handles the masking automatically
+        # Standard Flash Attention
         y = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop if self.training else 0, is_causal=True)
 
         # att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
@@ -215,7 +214,8 @@ class MLP(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
 
-        hidden_dim = get_hidden_dim(cfg.d_model, cfg.expansion_factor, multiple_of=64)
+        hidden_dim = int(d_model * cfg.expansion_factor)
+        hidden_dim = 64  * ((hidden_dim + 64  - 1) // 64)
 
         self.net = nn.Sequential(
             nn.Linear(cfg.d_model, hidden_dim),
@@ -257,6 +257,26 @@ class GPT(nn.Module):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if isinstance(module, nn.Linear) and module.bias is not None:
                 nn.init.zeros_(module.bias)
+    
+    # --- NEW: Correct Weight Decay logic ---
+    def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
+        # Filter params that require grad
+        param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
+        
+        # 1. Decay: Linear weights and Embeddings
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+        
+        # 2. No Decay: Biases, LayerNorms, Positional Embeddings
+        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+        
+        optim_groups = [
+            {'params': decay_params, 'weight_decay': weight_decay},
+            {'params': nodecay_params, 'weight_decay': 0.0}
+        ]
+        
+        # Create AdamW optimizer
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas)
+        return optimizer
 
     def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
         B, T = idx.size()
@@ -269,8 +289,7 @@ class GPT(nn.Module):
         if targets is None:
             loss = None
         else:
-            # label_smoothing=0.1 helps prevent overfitting on small/noisy datasets
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean', label_smoothing=0.1)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
         return logits, loss
 
 def main():
@@ -319,7 +338,7 @@ def main():
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
     
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.95))
+    opt = torch.optim.configure_optimizers(args.weight_decay, args.lr, (0.9, 0.95), device)
 
     # OneCycleLR scheduler
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
