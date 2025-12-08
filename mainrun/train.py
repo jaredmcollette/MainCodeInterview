@@ -157,9 +157,9 @@ class CausalSelfAttention(nn.Module):
         self.n_head   = cfg.n_head
         self.qkv = nn.Linear(cfg.d_model, 3 * cfg.d_model)
         self.proj = nn.Linear(cfg.d_model, cfg.d_model)
-        self.attn_drop = nn.Dropout(cfg.dropout)
+        self.attn_drop = cfg.dropout
         self.resid_drop= nn.Dropout(cfg.dropout)
-        self.register_buffer("tril", torch.tril(torch.ones(cfg.block_size, cfg.block_size)))
+        # self.register_buffer("tril", torch.tril(torch.ones(cfg.block_size, cfg.block_size)))
 
     def forward(self, x: torch.Tensor):
         B, T, C = x.size()
@@ -168,7 +168,7 @@ class CausalSelfAttention(nn.Module):
 
         # Use efficient Flash Attention
         # is_causal=True handles the masking automatically
-        y = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0, is_causal=True)
+        y = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop if self.training else 0, is_causal=True)
 
         # att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
         # att = att.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
