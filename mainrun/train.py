@@ -214,7 +214,7 @@ class MLP(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
 
-        hidden_dim = int(d_model * cfg.expansion_factor)
+        hidden_dim = int(cfg.d_model * cfg.expansion_factor)
         hidden_dim = 64  * ((hidden_dim + 64  - 1) // 64)
 
         self.net = nn.Sequential(
