@@ -231,19 +231,40 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln2(x))
         return x
 
+def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+    t = torch.arange(end, device=freqs.device)
+    freqs = torch.outer(t, freqs).float()
+    freqs_cos = torch.cos(freqs)
+    freqs_sin = torch.sin(freqs)
+    return freqs_cos, freqs_sin
+
 class GPT(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
         self.cfg = cfg
         self.token_emb = nn.Embedding(cfg.vocab_size, cfg.d_model)
-        self.pos_emb   = nn.Parameter(torch.zeros(1, cfg.block_size, cfg.d_model))
+        # Note: self.pos_emb is removed because we are using RoPE in the attention layer
+        # self.pos_emb   = nn.Parameter(torch.zeros(1, cfg.block_size, cfg.d_model))
         self.drop      = nn.Dropout(cfg.dropout)
         self.blocks    = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layer)])
         self.ln_f      = RMSNorm(cfg.d_model)
         self.head      = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
 
         self.apply(self._init_weights)
+
+        # 2. Apply special scaling to residual projections (Optimization for deeper nets)
+        # We target the output projection of Attention and MLP
+        # for pn, p in self.named_parameters():
+        #     if pn.endswith('c_proj.weight') or pn.endswith('proj.weight'):
+        #         torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * cfg.n_layer))
+
         self.head.weight = self.token_emb.weight
+
+        # Precompute RoPE frequencies
+        freqs_cos, freqs_sin = precompute_freqs_cis(cfg.d_model // cfg.n_head, cfg.block_size)
+        self.register_buffer("freqs_cos", freqs_cos)
+        self.register_buffer("freqs_sin", freqs_sin)
 
     @staticmethod
     def _init_weights(module):
@@ -255,9 +276,11 @@ class GPT(nn.Module):
     def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
         B, T = idx.size()
         tok = self.token_emb(idx)
-        pos = self.pos_emb[:, :T, :]
+        # pos = self.pos_emb[:, :T, :]
         x = self.drop(tok + pos)
-        for block in self.blocks: x = block(x)
+
+        # Pass RoPE frequencies to blocks
+        for block in self.blocks: x = block(x, self.freqs_cos, self.freqs_sin)
         x = self.ln_f(x)
         logits = self.head(x)
         if targets is None:
