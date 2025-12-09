@@ -148,9 +148,16 @@ class GPTConfig:
 
 # ALiBi implementation
 def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
-    slopes = 2 ** -(torch.arange(0, n_head) / (n_head - 1) * 8)  # Geometric sequence
-    positions = torch.arange(1 - max_len, max_len).float().abs().roll(max_len - 1, dims=0)
-    return -slopes.view(1, -1, 1) * positions.view(1, 1, -1)
+    # Generate slopes (m_i) for each head    if n_head > 1:
+        slopes = 2 ** -(torch.arange(0, n_head) / (n_head - 1) * 8)
+    else:
+        slopes = torch.tensor([1.0])  # Single head case    
+    # Create distance matrix    
+    positions = torch.arange(max_len)
+    dist = positions[:, None] - positions[None, :]  # [max_len, max_len]
+    # Create bias matrix with shape [n_head, max_len, max_len]
+    return -slopes.view(-1, 1, 1) * dist.abs().view(1, max_len, max_len)
+
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
@@ -160,7 +167,7 @@ class CausalSelfAttention(nn.Module):
         self.n_head   = cfg.n_head
 
         # Register ALiBi mask
-        self.register_buffer("alibi", build_alibi_mask(cfg.n_head, cfg.block_size))
+        self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
 
         self.qkv = nn.Linear(cfg.d_model, 3 * cfg.d_model)
         self.proj = nn.Linear(cfg.d_model, cfg.d_model)
@@ -170,8 +177,22 @@ class CausalSelfAttention(nn.Module):
 
     def forward(self, x: torch.Tensor):
         B, T, C = x.size()
-        qkv = self.qkv(x).view(B, T, 3, self.n_head, self.head_dim).transpose(1, 3)
-        q, k, v = qkv[..., 0, :, :], qkv[..., 1, :, :], qkv[..., 2, :, :]
+        qkv = self.qkv(x).view(B, T, 3, self.n_head, self.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0)  # [B, n_head, T, head_dim]
+
+        # Attention scores
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
+
+        # Add ALiBi bias
+        bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
+        att = att + bias
+        # Apply causal mask
+        mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
+        att = att.masked_fill(mask, float('-inf'))
+        # Softmax and attention
+        att = F.softmax(att, dim=-1)
+        att = F.dropout(att, p=self.attn_drop if self.training else 0)
+        y = att @ v
 
         # Manual attention + ALiBi        
         att = q @ k.transpose(-2, -1) / math.sqrt(self.head_dim)
