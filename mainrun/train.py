@@ -111,7 +111,7 @@ def iter_full_split(split_ids: torch.Tensor, block_size: int, batch_size: int, d
         yield x, y
 
 def train_tokenizer(titles: list[str], vocab_size: int, unk_token: str = "<unk>", pad_token: str = "<pad>", eos_token: str = "<eos>") -> Tokenizer:
-    tokenizer = Tokenizer(models.BPE(unk_token=unk_token, dropout=0.1))
+    tokenizer = Tokenizer(models.BPE(unk_token=unk_token))
     tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel()
     tokenizer.decoder = decoders.ByteLevel()
     trainer = trainers.BpeTrainer(
@@ -238,10 +238,10 @@ class Block(nn.Module):
         self.mlp  = MLP(cfg)
         self.residual_scale = math.sqrt(2 * depth)
     def forward(self, x):
-        x = x + self.attn(self.ln1(x))
-        x = x + x / self.residual_scale
-        x = x + self.mlp(self.ln2(x))
-        x = x + x / self.residual_scale
+        attn_out = x + self.attn(self.ln1(x))
+        x = x + attn_out / self.residual_scale
+        mlp_out = x + self.mlp(self.ln2(x))
+        x = x + mlp_out / self.residual_scale
         return x
 
 class GPT(nn.Module):
