@@ -7,7 +7,6 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from torch.cuda.amp import autocast, GradScaler
 from datasets import load_dataset
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders
 from tqdm import tqdm
@@ -212,74 +211,13 @@ class Block(nn.Module):
         self.ln2 = RMSNorm(cfg.d_model)
         self.attn = CausalSelfAttention(cfg)
         self.mlp  = MLP(cfg)
+        self.residual_scale = math.sqrt(2 * depth)
     def forward(self, x):
         x = x + self.attn(self.ln1(x))
+        x = x + x / self.residual_scale
         x = x + self.mlp(self.ln2(x))
+        x = x + x / self.residual_scale
         return x
-
-class Lion(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-4, betas=(0.9, 0.95), eps=1e-5, weight_decay=0):
-        if not 0.0 <= lr:
-            raise ValueError(f"Invalid learning rate: {lr}")
-        if not 0.0 <= eps:
-            raise ValueError(f"Invalid epsilon value: {eps}")
-        if not 0.0 <= betas[0] < 1.0:
-            raise ValueError(f"Invalid beta parameter: {betas[0]}")
-        if not 0.0 <= betas[1] < 1.0:
-            raise ValueError(f"Invalid beta parameter: {betas[1]}")
-        if not 0.0 <= weight_decay:
-            raise ValueError(f"Invalid weight_decay value: {weight_decay}")
-
-        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
-        super().__init__(params, defaults)
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        loss = None
-        if closure is not None:
-            with torch.enable_grad():
-                loss = closure()
-
-        for group in self.param_groups:
-            lr = group["lr"]
-            beta1, _ = group["betas"]  # Only beta1 used
-            eps = group["eps"]
-            wd = group["weight_decay"]
-
-            for p in group["params"]:
-                if p.grad is None:
-                    continue
-                grad = p.grad
-                state = self.state[p]
-
-                # State initialization
-                if len(state) == 0:
-                    state["exp_avg"] = torch.zeros_like(p, memory_format=torch.preserve_format)
-                    state["step"] = torch.zeros_like(p, memory_format=torch.preserve_format, dtype=torch.long)
-
-                exp_avg = state["exp_avg"]
-                step = state["step"]
-
-                # Update step
-                step.add_(1)
-
-                # Decay the momentum running average coefficient
-                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
-
-                # Weight decay (decoupled)
-                if wd != 0:
-                    p.mul_(1 - lr * wd)
-
-                # Normalized sign update
-                update = exp_avg.clone()
-                denom = (update.abs() + eps).sqrt()
-                update.div_(denom)
-                update.sign_()
-
-                # Apply update
-                p.add_(update, alpha=-lr)
-
-        return loss
 
 class GPT(nn.Module):
     def __init__(self, cfg: GPTConfig):
@@ -288,7 +226,7 @@ class GPT(nn.Module):
         self.token_emb = nn.Embedding(cfg.vocab_size, cfg.d_model)
         self.pos_emb   = nn.Parameter(torch.zeros(1, cfg.block_size, cfg.d_model))
         self.drop      = nn.Dropout(cfg.dropout)
-        self.blocks    = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layer)])
+        self.blocks    = nn.ModuleList([Block(cfg, i+1) for i in range(cfg.n_layer)])
         self.ln_f      = RMSNorm(cfg.d_model)
         self.head      = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
 
@@ -319,7 +257,7 @@ class GPT(nn.Module):
         ]
         
         # Create AdamW optimizer
-        optimizer = Lion(optim_groups, lr=learning_rate, betas=betas)
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas)
         return optimizer
 
     def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
@@ -395,11 +333,6 @@ def main():
         final_div_factor=args.final_div_factor 
     )
 
-    # AMP setup
-    scaler = None
-    if device == "cuda":
-        scaler = GradScaler()
-
     def evaluate():
         model.eval()
         losses = 0.0
@@ -419,27 +352,11 @@ def main():
         for _ in tqdm(range(1, batches + 1), desc=f"Epoch {epoch}/{args.epochs}"):
             step += 1
             xb, yb, ptr = get_batch(train_ids, ptr, args.block_size, args.batch_size, device)
-
-            if scaler is not None:
-                with autocast():
-                    _, loss = model(xb, yb)
-                scaler.scale(loss).backward()
-                scaler.unscale_(opt)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
-                scaler.step(opt)
-                scaler.update()
-            else:
-                _, loss = model(xb, yb)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
-                opt.step()
-
-            # _, loss = model(xb, yb)
-            # opt.zero_grad(set_to_none=True)
-            # loss.backward()
-            # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            # opt.step()
-
+            _, loss = model(xb, yb)
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
             scheduler.step()
 
             elapsed = time.time() - t0
