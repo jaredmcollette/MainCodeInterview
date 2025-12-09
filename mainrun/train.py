@@ -148,14 +148,15 @@ class GPTConfig:
 
 # ALiBi implementation
 def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
-    # Generate slopes (m_i) for each head    if n_head > 1:
+    # Generate slopes (m_i) for each head
+    if n_head > 1:
         slopes = 2 ** -(torch.arange(0, n_head) / (n_head - 1) * 8)
     else:
         slopes = torch.tensor([1.0])  # Single head case    
     # Create distance matrix    
     positions = torch.arange(max_len)
-    dist = positions[:, None] - positions[None, :]  # [max_len, max_len]
-    # Create bias matrix with shape [n_head, max_len, max_len]
+    dist = positions[:, None] - positions[None, :]
+    # Create bias matrix
     return -slopes.view(-1, 1, 1) * dist.abs().view(1, max_len, max_len)
 
 
