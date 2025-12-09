@@ -21,12 +21,10 @@ class Hyperparameters:
     n_head: int = 8
     d_model: int = 512
     dropout: float = 0.1
-    lr: float = 1.8e-4
-    beta1: float = 0.92    # Lion-specific momentum parameter
-    beta2: float = 0.99    # Lion-specific exponential smoothing parameter
+    lr: float = 8e-4
     pct_start: float = 0.2
     div_factor: float = 5.0
-    final_div_factor: float = 100.0
+    final_div_factor: float = 150.0
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
     expansion_factor: float = 6
@@ -36,60 +34,6 @@ class Hyperparameters:
     num_titles: int = 100_000
     val_frac: float = 0.10
     log_file: str = "./logs/mainrun.log"
-
-# Lion optimizer implementation
-class Lion(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-4, betas=(0.9, 0.99), weight_decay=0.0):
-        if lr < 0.0:
-            raise ValueError(f"Invalid learning rate: {lr}")
-        if not 0.0 <= betas[0] < 1.0:
-            raise ValueError(f"Invalid beta parameter at index 0: {betas[0]}")
-        if not 0.0 <= betas[1] < 1.0:
-            raise ValueError(f"Invalid beta parameter at index 1: {betas[1]}")
-
-        defaults = dict(lr=lr, betas=betas, weight_decay=weight_decay)
-        super().__init__(params, defaults)
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        loss = None
-        if closure is not None:
-            with torch.enable_grad():
-                loss = closure()
-
-        for group in self.param_groups:
-            for p in group['params']:
-                if p.grad is None:
-                    continue
-                grad = p.grad
-                lr = group['lr']
-                wd = group['weight_decay']
-                beta1, beta2 = group['betas']
-                state = self.state[p]
-
-                # State initialization
-                if len(state) == 0:
-                    state['exp_avg'] = torch.zeros_like(p)
-
-                exp_avg = state['exp_avg']
-
-                # Update with gradient clipping
-                grad_norm = torch.norm(grad)
-                if grad_norm > 1.0:
-                    grad = grad * (1.0 / grad_norm.item())
-
-                # Update the exponential moving average
-                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
-
-                # Apply decoupled weight decay (Lion specific)
-                if wd != 0:
-                    p.data.mul_(1 - lr * wd)
-
-                # Update using sign of the EMA
-                update = torch.sign(exp_avg)
-                p.add_(update, alpha=-lr)
-
-        return loss
 
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-8):
@@ -337,8 +281,8 @@ class GPT(nn.Module):
             {'params': nodecay_params, 'weight_decay': 0.0}
         ]
         
-        # Create Lion optimizer
-        optimizer = Lion(optim_groups, lr=learning_rate, betas=betas)
+        # Create AdamW optimizer
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas)
         return optimizer
 
     def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
@@ -401,7 +345,7 @@ def main():
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
     
-    opt = model.configure_optimizers(args.weight_decay, args.lr, (args.beta1, args.beta2), device)
+    opt = model.configure_optimizers(args.weight_decay, args.lr, (0.9, 0.95), device)
 
     # OneCycleLR scheduler
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
