@@ -203,8 +203,8 @@ class CausalSelfAttention(nn.Module):
         k = self.k_norm(k)
 
         # Expand KV to match Q heads (GQA key operation)
-        k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
-        v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
+        k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=2)
+        v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=2)
 
         # Attention scores
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
