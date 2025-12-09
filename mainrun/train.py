@@ -27,7 +27,7 @@ class Hyperparameters:
     final_div_factor: float = 100.0
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
-    expansion_factor: float = 2.67
+    expansion_factor: float = 6
     
     epochs: int = 7
     seed: int = 1337
@@ -96,14 +96,20 @@ def get_titles(num_titles: int, seed: int, val_frac: float) -> str:
     n = int(num_titles * (1 - val_frac))
     return titles[:n], titles[n:]
 
-def get_batch(split_ids: torch.Tensor, ptr: int, block_size: int, batch_size: int, device: torch.device):
-    span = block_size * batch_size + 1
-    if ptr + span >= len(split_ids):
-        ptr = 0
-    batch = split_ids[ptr: ptr + span]
-    x = batch[:-1].view(batch_size, block_size).to(device)
-    y = batch[1:].view(batch_size, block_size).to(device)
-    return x, y, ptr + block_size * batch_size
+# def get_batch(split_ids: torch.Tensor, ptr: int, block_size: int, batch_size: int, device: torch.device):
+#     span = block_size * batch_size + 1
+#     if ptr + span >= len(split_ids):
+#         ptr = 0
+#     batch = split_ids[ptr: ptr + span]
+#     x = batch[:-1].view(batch_size, block_size).to(device)
+#     y = batch[1:].view(batch_size, block_size).to(device)
+#     return x, y, ptr + block_size * batch_size
+
+    def get_random_batch(split_ids: torch.Tensor, block_size: int, batch_size: int, device: torch.device):
+        starts = torch.randint(0, len(split_ids) - block_size - 1, (batch_size,))
+        x = torch.stack([split_ids[i:i+block_size] for i in starts])
+        y = torch.stack([split_ids[i+1:i+block_size+1] for i in starts])
+        return x.to(device), y.to(device)
 
 def iter_full_split(split_ids: torch.Tensor, block_size: int, batch_size: int, device: torch.device):
     span = block_size * batch_size + 1
@@ -351,7 +357,8 @@ def main():
     for epoch in range(1, args.epochs + 1):
         for _ in tqdm(range(1, batches + 1), desc=f"Epoch {epoch}/{args.epochs}"):
             step += 1
-            xb, yb, ptr = get_batch(train_ids, ptr, args.block_size, args.batch_size, device)
+            # xb, yb, ptr = get_batch(train_ids, ptr, args.block_size, args.batch_size, device)
+            xb, yb = get_random_batch(train_ids, args.block_size, args.batch_size, device)
             _, loss = model(xb, yb)
             opt.zero_grad(set_to_none=True)
             loss.backward()
