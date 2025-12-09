@@ -238,10 +238,15 @@ class Block(nn.Module):
         self.mlp  = MLP(cfg)
         self.residual_scale = math.sqrt(2 * depth)
     def forward(self, x):
-        attn_out = x + self.attn(self.ln1(x))
-        x = x + attn_out / self.residual_scale
-        mlp_out = x + self.mlp(self.ln2(x))
-        x = x + mlp_out / self.residual_scale
+        # Should be
+        # residual = x + self.attn(self.ln1(x))
+        # x = x + residual / self.residual_scale
+        # residual = x + self.mlp(self.ln2(x))
+        # x = x + residual / self.residual_scale
+        x = x + self.attn(self.ln1(x))
+        x = x + x / self.residual_scale
+        x = x + self.mlp(self.ln2(x))
+        x = x + x / self.residual_scale
         return x
 
 class GPT(nn.Module):
