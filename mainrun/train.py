@@ -14,9 +14,9 @@ import structlog
 
 @dataclass
 class Hyperparameters:
-    block_size: int = 128
-    batch_size: int = 32
-    vocab_size: int = 8192
+    block_size: int = 256
+    batch_size: int = 64
+    vocab_size: int = 16000
     n_layer: int = 4
     n_head: int = 8
     d_model: int = 512
@@ -299,6 +299,12 @@ class GPT(nn.Module):
             {'params': decay_params, 'weight_decay': weight_decay},
             {'params': nodecay_params, 'weight_decay': 0.0}
         ]
+
+        # Using fused AdamW if available for speed
+        fused_available = 'fused' in torch.optim.AdamW.__init__.__code__.co_varnames
+        use_fused = fused_available and 'cuda' in device_type
+        extra_args = dict(fused=True) if use_fused else dict()
+        logger.log("fused", fused_available=fused_available)
         
         # Create AdamW optimizer
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas)
@@ -391,19 +397,10 @@ def main():
     ptr = 0
     step = 0
     t0 = time.time()
-
-    # Prepare scaler for mixed precision
-    scaler = torch.cuda.amp.GradScaler(enabled=(device == "cuda"))
-
     for epoch in range(1, args.epochs + 1):
         for _ in tqdm(range(1, batches + 1), desc=f"Epoch {epoch}/{args.epochs}"):
             step += 1
             xb, yb = get_random_batch(train_ids, args.block_size, args.batch_size, device)
-
-            # Mixed Precision Context
-            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
-                logits, loss = model(xb, yb)
-
             _, loss = model(xb, yb)
             opt.zero_grad(set_to_none=True)
             loss.backward()
