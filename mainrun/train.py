@@ -297,7 +297,7 @@ class GPT(nn.Module):
 
         # Depth-scaled init for output layers
         for block in self.blocks:
-            nn.init.normal_(block.attn.proj.weight, mean=0.0, std=0.02 / math.sqrt(2 * cfg.n_layer))
+            nn.init.normal_(block.attn.o_proj.weight, mean=0.0, std=0.02 / math.sqrt(2 * cfg.n_layer))
             nn.init.normal_(block.mlp.c_proj.weight, mean=0.0, std=0.02 / math.sqrt(2 * cfg.n_layer))
 
         self.head.weight = self.token_emb.weight
