@@ -21,7 +21,7 @@ class Hyperparameters:
     n_head: int = 8
     d_model: int = 512
     dropout: float = 0.1
-    lr: float = 8e-4
+    lr: float = 1.8e-4
     beta1: float = 0.92    # Lion-specific momentum parameter
     beta2: float = 0.99    # Lion-specific exponential smoothing parameter
     pct_start: float = 0.2
@@ -37,7 +37,7 @@ class Hyperparameters:
     val_frac: float = 0.10
     log_file: str = "./logs/mainrun.log"
 
-# Lion optimizer implementation (ADD HERE)
+# Lion optimizer implementation
 class Lion(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-4, betas=(0.9, 0.99), weight_decay=0.0):
         if lr < 0.0:
@@ -72,6 +72,11 @@ class Lion(torch.optim.Optimizer):
                     state['exp_avg'] = torch.zeros_like(p)
 
                 exp_avg = state['exp_avg']
+
+                # Update with gradient clipping
+                grad_norm = torch.norm(grad)
+                if grad_norm > 1.0:
+                    grad = grad * (1.0 / grad_norm.item())
 
                 # Update the exponential moving average
                 exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
