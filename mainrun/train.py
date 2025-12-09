@@ -343,6 +343,8 @@ def main():
     batches = len(train_ids) // (args.block_size * args.batch_size)
     max_steps = args.epochs * batches
     eval_interval = batches // args.evals_per_epoch
+    warmup_steps = int(max_steps * 0.1)
+
     logger.log("dataset_info",
                titles_count=len(train_titles),
                epochs=args.epochs,
