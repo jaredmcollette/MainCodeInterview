@@ -195,12 +195,12 @@ class CausalSelfAttention(nn.Module):
         att = F.dropout(att, p=self.attn_drop if self.training else 0)
         y = att @ v
 
-        # Manual attention + ALiBi        
-        att = q @ k.transpose(-2, -1) / math.sqrt(self.head_dim)
-        att = att + self.alibi[..., :T, :T]  # Slice to sequence length  
-        att = F.softmax(att.masked_fill(torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1), float('-inf')), dim=-1)
-        att = F.dropout(att, p=self.attn_drop, training=self.training)
-        y = att @ v 
+        # # Manual attention + ALiBi        
+        # att = q @ k.transpose(-2, -1) / math.sqrt(self.head_dim)
+        # att = att + self.alibi_bias[..., :T, :T]  # Slice to sequence length  
+        # att = F.softmax(att.masked_fill(torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1), float('-inf')), dim=-1)
+        # att = F.dropout(att, p=self.attn_drop, training=self.training)
+        # y = att @ v 
 
         # Standard Flash Attention
         # y = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop if self.training else 0, is_causal=True)
