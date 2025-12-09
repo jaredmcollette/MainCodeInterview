@@ -259,14 +259,20 @@ class MLP(nn.Module):
 
 # Parallel Residual Block
 class Block(nn.Module):
-    def __init__(self, cfg: GPTConfig, depth: int):
+    def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.1):
         super().__init__()
         # Shared layer norm for both branches 
         self.norm = RMSNorm(cfg.d_model)
         self.attn = CausalSelfAttention(cfg)
         self.mlp  = MLP(cfg)
+        self.drop_rate = drop_rate * (depth / cfg.n_layer)
         self.residual_scale = math.sqrt(2 * depth)
+        
     def forward(self, x):
+        # Stochastic depth
+        if self.training and random.random() < self.drop_rate:
+            return x
+
         # Should be but the code below but the mistake version performs better. Investigate later.
         residual = x
         x_norm = self.norm(x)
@@ -398,7 +404,7 @@ def main():
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
     
-    opt = model.configure_optimizers(args.weight_decay, args.lr, (0.9, 0.999), device)
+    opt = model.configure_optimizers(args.weight_decay, args.lr, (0.9, 0.95), device)
 
     # OneCycleLR scheduler
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
