@@ -17,7 +17,7 @@ class Hyperparameters:
     block_size: int = 256
     batch_size: int = 64
     vocab_size: int = 12_000
-    n_layer: int = 6
+    n_layer: int = 4
     n_head: int = 8
     d_model: int = 512
     dropout: float = 0.1
@@ -111,12 +111,18 @@ def iter_full_split(split_ids: torch.Tensor, block_size: int, batch_size: int, d
         yield x, y
 
 def train_tokenizer(titles: list[str], vocab_size: int, unk_token: str = "<unk>", pad_token: str = "<pad>", eos_token: str = "<eos>") -> Tokenizer:
-    tokenizer = Tokenizer(models.BPE(unk_token=unk_token))
-    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel()
+    tokenizer = Tokenizer(models.BPE(unk_token=unk_token, fuse_unk=True, byte_fallback=True))
+    tokenizer.pre_tokenizer = pre_tokenizers.Sequence([
+        pre_tokenizers.WhitespaceSplit(),
+        pre_tokenizers.Punctuation()
+    ])
     tokenizer.decoder = decoders.ByteLevel()
     trainer = trainers.BpeTrainer(
         vocab_size=vocab_size,
-        special_tokens=[pad_token, eos_token, unk_token]
+        special_tokens=[pad_token, eos_token, unk_token],
+        min_frequency=2,
+        initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
+        continuing_subword_prefix="##"
     )
     tokenizer.train_from_iterator(titles, trainer)
     return tokenizer
