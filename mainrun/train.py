@@ -36,7 +36,7 @@ class Hyperparameters:
     log_file: str = "./logs/mainrun.log"
 
 class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-6):
+    def __init__(self, dim: int, eps: float = 1e-8):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
@@ -288,7 +288,7 @@ def main():
     train_titles, val_titles = get_titles(args.num_titles, args.seed, args.val_frac)
     
     eos_token = "<eos>"
-    tok = BPETokenizer(train_tokenizer(train_titles+val_titles, args.vocab_size, eos_token=eos_token))
+    tok = BPETokenizer(train_tokenizer(train_titles, args.vocab_size, eos_token=eos_token))
     train_text = eos_token.join(train_titles) + eos_token
     val_text = eos_token.join(val_titles) + eos_token
     train_ids = torch.tensor(tok.encode(train_text), dtype=torch.long)
