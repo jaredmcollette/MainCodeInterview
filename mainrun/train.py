@@ -268,7 +268,7 @@ class GPT(nn.Module):
         if targets is None:
             loss = None
         else:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), label_smoothing=0.1, reduction='mean')
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
         return logits, loss
 
 def main():
@@ -317,7 +317,7 @@ def main():
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
     
-    opt = model.configure_optimizers(args.weight_decay, args.lr, (0.9, 0.95), device)
+    opt = model.configure_optimizers(args.weight_decay, args.lr, (0.9, 0.999), device)
 
     # OneCycleLR scheduler
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
