@@ -187,18 +187,24 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
 
 def apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor, sin: torch.Tensor, cos: torch.Tensor) -> tuple:
     """Apply rotary embeddings to query and key tensors."""
-    # q shape: [B, H, T, D]
-    # sin/cos shape: [T, D/2]
-# They need to be expanded to match q/k shapes
-    sin = sin.unsqueeze(0).unsqueeze(0)  # Add batch and head dimensions
-    cos = cos.unsqueeze(0).unsqueeze(0)
-    # Now sin/cos: [1, 1, T, D/2]
+
+    # Get the first half of dimensions for rotation
+    q1, q2 = q.chunk(2, dim=-1)
     
-    # For rotary embeddings, we only rotate the first half of dimensions
-    q_half, q_rest = q.chunk(2, dim=-1)
-    sin = sin.unsqueeze(-1)  # Expand to match dimension splitting
-    cos = cos.unsqueeze(-1)
-    return q * cos + rotate_half(q) * sin, k * cos + rotate_half(k) * sin
+    # Apply rotation to first half, leave second half unchanged
+    sin_expanded = sin.unsqueeze(0).unsqueeze(0)
+    cos_expanded = cos.unsqueeze(0).unsqueeze(0)
+    
+    q_rotated1 = q1 * cos_expanded - q2 * sin_expanded
+    q_rotated2 = q1 * sin_expanded + q2 * cos_expanded
+    
+    # Same for k
+    k1, k2 = k.chunk(2, dim=-1)
+    
+    # Recombine
+    q_embed = torch.cat([q_rotated1, q_rotated2], dim=-1)
+    
+    return q_embed, k_embed
 
 # Grouped-Query Attention
 class CausalSelfAttention(nn.Module):
