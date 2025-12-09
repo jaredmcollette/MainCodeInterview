@@ -403,7 +403,7 @@ def main():
             _, loss = model(xb, yb)
             opt.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
             opt.step()
             scheduler.step()
 
