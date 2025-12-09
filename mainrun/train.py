@@ -105,11 +105,11 @@ def get_titles(num_titles: int, seed: int, val_frac: float) -> str:
 #     y = batch[1:].view(batch_size, block_size).to(device)
 #     return x, y, ptr + block_size * batch_size
 
-    def get_random_batch(split_ids: torch.Tensor, block_size: int, batch_size: int, device: torch.device):
-        starts = torch.randint(0, len(split_ids) - block_size - 1, (batch_size,))
-        x = torch.stack([split_ids[i:i+block_size] for i in starts])
-        y = torch.stack([split_ids[i+1:i+block_size+1] for i in starts])
-        return x.to(device), y.to(device)
+def get_random_batch(split_ids: torch.Tensor, block_size: int, batch_size: int, device: torch.device):
+    starts = torch.randint(0, len(split_ids) - block_size - 1, (batch_size,))
+    x = torch.stack([split_ids[i:i+block_size] for i in starts])
+    y = torch.stack([split_ids[i+1:i+block_size+1] for i in starts])
+    return x.to(device), y.to(device)
 
 def iter_full_split(split_ids: torch.Tensor, block_size: int, batch_size: int, device: torch.device):
     span = block_size * batch_size + 1
