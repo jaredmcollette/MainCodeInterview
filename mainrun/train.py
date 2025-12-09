@@ -190,11 +190,10 @@ class CausalSelfAttention(nn.Module):
         B, T, C = x.size()
 
         # Project Q (all heads)
-        q = self.q_proj(x).view(B, T, self.n_head, self.head_dim)
+        q = self.q_proj(x).view(B, T, self.n_head, self.head_dim).permute(0, 2, 1, 3)
 
         # Project K,V (fewer heads)
-        kv = self.kv_proj(x).view(B, T, 2, self.n_kv_heads, self.head_dim)
-        kv = kv.permute(2, 0, 3, 1, 4)
+        kv = self.kv_proj(x).view(B, T, 2, self.n_kv_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         k, v = kv.unbind(0)
         # qkv = self.qkv(x).view(B, T, 3, self.n_head, self.head_dim).permute(2, 0, 3, 1, 4)
         
@@ -203,8 +202,8 @@ class CausalSelfAttention(nn.Module):
         k = self.k_norm(k)
 
         # Expand KV to match Q heads (GQA key operation)
-        k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=2)
-        v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=2)
+        k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
+        v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
 
         # Attention scores
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
