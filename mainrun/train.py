@@ -20,8 +20,8 @@ class Hyperparameters:
     n_layer: int = 4
     n_head: int = 8
     d_model: int = 512
-    dropout: float = 0.2
-    lr: float = 8e-4
+    dropout: float = 0.1
+    lr: float = 1e-3
     pct_start: float = 0.2
     div_factor: float = 5.0
     final_div_factor: float = 100.0
