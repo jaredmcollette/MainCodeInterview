@@ -24,7 +24,7 @@ class Hyperparameters:
     lr: float = 8e-4
     pct_start: float = 0.2
     div_factor: float = 5.0
-    final_div_factor: float = 150.0
+    final_div_factor: float = 100.0
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
     expansion_factor: float = 6
@@ -111,7 +111,7 @@ def iter_full_split(split_ids: torch.Tensor, block_size: int, batch_size: int, d
         yield x, y
 
 def train_tokenizer(titles: list[str], vocab_size: int, unk_token: str = "<unk>", pad_token: str = "<pad>", eos_token: str = "<eos>") -> Tokenizer:
-    tokenizer = Tokenizer(models.BPE(unk_token=unk_token))
+    tokenizer = Tokenizer(models.BPE(unk_token=unk_token, dropout=0.1))
     tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel()
     tokenizer.decoder = decoders.ByteLevel()
     trainer = trainers.BpeTrainer(
