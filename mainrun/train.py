@@ -156,11 +156,12 @@ class CausalSelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
         assert cfg.d_model % cfg.n_head == 0
+        self.head_dim = cfg.d_model // cfg.n_head
+        self.n_head   = cfg.n_head
+
         # Register ALiBi mask
         self.register_buffer("alibi", build_alibi_mask(cfg.n_head, cfg.block_size))
 
-        # self.head_dim = cfg.d_model // cfg.n_head
-        # self.n_head   = cfg.n_head
         self.qkv = nn.Linear(cfg.d_model, 3 * cfg.d_model)
         self.proj = nn.Linear(cfg.d_model, cfg.d_model)
         self.attn_drop = cfg.dropout
