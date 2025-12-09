@@ -153,17 +153,43 @@ class GPTConfig:
     expansion_factor: float
 
 # ALiBi implementation
-def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
-    # Generate slopes (m_i) for each head
-    if n_head > 1:
-        slopes = 2 ** -(torch.arange(0, n_head) / (n_head - 1) * 8)
-    else:
-        slopes = torch.tensor([1.0])  # Single head case    
-    # Create distance matrix    
-    positions = torch.arange(max_len)
-    dist = positions[:, None] - positions[None, :]
-    # Create bias matrix
-    return -slopes.view(-1, 1, 1) * dist.abs().view(1, max_len, max_len)
+# def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
+#     # Generate slopes (m_i) for each head
+#     if n_head > 1:
+#         slopes = 2 ** -(torch.arange(0, n_head) / (n_head - 1) * 8)
+#     else:
+#         slopes = torch.tensor([1.0])  # Single head case    
+#     # Create distance matrix    
+#     positions = torch.arange(max_len)
+#     dist = positions[:, None] - positions[None, :]
+#     # Create bias matrix
+#     return -slopes.view(-1, 1, 1) * dist.abs().view(1, max_len, max_len)
+
+class RotaryPositionalEmbedding(nn.Module):
+    def __init__(self, dim: int, max_len: int = 2048):
+        super().__init__()
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
+        position = torch.arange(max_len).float()
+        sinusoid = torch.einsum('i,j->ij', position, inv_freq)
+        sin = sinusoid.sin()
+        cos = sinusoid.cos()
+        self.register_buffer("sin", sin)
+        self.register_buffer("cos", cos)
+
+    def forward(self, x, seq_len=None):
+        # x shape: [batch, heads, seq_len, dim]
+        return self.sin[:seq_len], self.cos[:seq_len]
+
+def rotate_half(x: torch.Tensor) -> torch.Tensor:
+    """Rotates half the hidden dims of the input."""
+    x1, x2 = x.chunk(2, dim=-1)
+        return torch.cat((-x2, x1), dim=-1)
+
+def apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor, sin: torch.Tensor, cos: torch.Tensor) -> tuple:
+    """Apply rotary embeddings to query and key tensors."""
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
 
 # Grouped-Query Attention
 class CausalSelfAttention(nn.Module):
@@ -175,7 +201,8 @@ class CausalSelfAttention(nn.Module):
         self.n_kv_heads = max(1, cfg.n_head // 4)
 
         # # Register ALiBi mask
-        self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
+        # self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
+        self.rope = RotaryPositionalEmbedding(self.head_dim, cfg.block_size)
 
         self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
         self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_kv_heads * self.head_dim)
@@ -206,6 +233,9 @@ class CausalSelfAttention(nn.Module):
         q = self.q_norm(q)
         k = self.k_norm(k)
 
+        sin, cos = self.rope(x, seq_len=T)
+        q, k = apply_rotary_pos_emb(q, k, sin, cos)
+
         # Expand KV to match Q heads (GQA key operation)
         k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
         v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
@@ -214,8 +244,8 @@ class CausalSelfAttention(nn.Module):
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
 
         # Add ALiBi bias
-        bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
-        att = att + bias
+        # bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
+        # att = att + bias
         # Apply causal mask
         mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
         att = att.masked_fill(mask, float('-inf'))
@@ -339,7 +369,6 @@ class GPT(nn.Module):
         fused_available = 'fused' in torch.optim.AdamW.__init__.__code__.co_varnames
         use_fused = fused_available and 'cuda' in device_type
         extra_args = dict(fused=True) if use_fused else dict()
-        logger.log("fused", fused_available=fused_available)
         
         # Create AdamW optimizer
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas)
