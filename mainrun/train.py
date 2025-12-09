@@ -204,7 +204,7 @@ class MLP(nn.Module):
         x = self.dropout(x)
         return x
 
-class Block(nn.Module):
+class Block(nn.Module, depth: int):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
         self.ln1 = RMSNorm(cfg.d_model)
