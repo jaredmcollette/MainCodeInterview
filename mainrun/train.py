@@ -22,11 +22,11 @@ class Hyperparameters:
     d_model: int = 512
     dropout: float = 0.1
     lr: float = 8e-4
-    beta1: float = 0.92    # Lion-specific momentum parameter    
-    beta2: float = 0.99    # Lion-specific exponential smoothing parameter 
+    beta1: float = 0.92    # Lion-specific momentum parameter
+    beta2: float = 0.99    # Lion-specific exponential smoothing parameter
     pct_start: float = 0.2
     div_factor: float = 5.0
-    final_div_factor: float = 150.0
+    final_div_factor: float = 100.0
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
     expansion_factor: float = 6
@@ -46,40 +46,41 @@ class Lion(torch.optim.Optimizer):
             raise ValueError(f"Invalid beta parameter at index 0: {betas[0]}")
         if not 0.0 <= betas[1] < 1.0:
             raise ValueError(f"Invalid beta parameter at index 1: {betas[1]}")
-            
+
         defaults = dict(lr=lr, betas=betas, weight_decay=weight_decay)
         super().__init__(params, defaults)
 
     @torch.no_grad()
     def step(self, closure=None):
-        loss = None        if closure is not None:
+        loss = None
+        if closure is not None:
             with torch.enable_grad():
                 loss = closure()
 
         for group in self.param_groups:
             for p in group['params']:
                 if p.grad is None:
-                    continue                
-                grad = p.grad                
+                    continue
+                grad = p.grad
                 lr = group['lr']
                 wd = group['weight_decay']
                 beta1, beta2 = group['betas']
                 state = self.state[p]
 
-                # State initialization                
+                # State initialization
                 if len(state) == 0:
                     state['exp_avg'] = torch.zeros_like(p)
 
                 exp_avg = state['exp_avg']
 
-                # Update the exponential moving average                
+                # Update the exponential moving average
                 exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
 
                 # Apply decoupled weight decay (Lion specific)
                 if wd != 0:
                     p.data.mul_(1 - lr * wd)
 
-                # Update using sign of the EMA                
+                # Update using sign of the EMA
                 update = torch.sign(exp_avg)
                 p.add_(update, alpha=-lr)
 
