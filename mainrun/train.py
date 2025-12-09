@@ -17,7 +17,7 @@ class Hyperparameters:
     block_size: int = 256
     batch_size: int = 64
     vocab_size: int = 16000
-    n_layer: int = 6
+    n_layer: int = 4
     n_head: int = 8
     d_model: int = 512
     dropout: float = 0.1
@@ -172,6 +172,11 @@ class CausalSelfAttention(nn.Module):
 
         self.qkv = nn.Linear(cfg.d_model, 3 * cfg.d_model)
         self.proj = nn.Linear(cfg.d_model, cfg.d_model)
+
+        # QK-Norm for stability
+        self.q_norm = RMSNorm(self.head_dim)
+        self.k_norm = RMSNorm(self.head_dim)
+
         self.attn_drop = cfg.dropout
         self.resid_drop= nn.Dropout(cfg.dropout)
         # self.register_buffer("tril", torch.tril(torch.ones(cfg.block_size, cfg.block_size)))
@@ -179,7 +184,11 @@ class CausalSelfAttention(nn.Module):
     def forward(self, x: torch.Tensor):
         B, T, C = x.size()
         qkv = self.qkv(x).view(B, T, 3, self.n_head, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)  # [B, n_head, T, head_dim]
+        q, k, v = qkv.unbind(0)
+
+        # Apply QK-Norm
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
         # Attention scores
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
@@ -260,6 +269,12 @@ class GPT(nn.Module):
         self.head      = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
 
         self.apply(self._init_weights)
+
+        # Depth-scaled init for output layers
+        for block in self.blocks:
+            nn.init.normal_(block.attn.proj.weight, mean=0.0, std=0.02 / math.sqrt(2 * cfg.n_layer))
+            nn.init.normal_(block.mlp.c_proj.weight, mean=0.0, std=0.02 / math.sqrt(2 * cfg.n_layer))
+
         self.head.weight = self.token_emb.weight
 
     @staticmethod
