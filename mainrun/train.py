@@ -343,8 +343,6 @@ def main():
     batches = len(train_ids) // (args.block_size * args.batch_size)
     max_steps = args.epochs * batches
     eval_interval = batches // args.evals_per_epoch
-    warmup_steps = int(max_steps * 0.1)
-
     logger.log("dataset_info",
                titles_count=len(train_titles),
                epochs=args.epochs,
@@ -367,25 +365,16 @@ def main():
     
     opt = model.configure_optimizers(args.weight_decay, args.lr, (0.9, 0.95), device)
 
-    # Cosine annealing with linear warmup
-    def lr_lambda(step):
-        if step < warmup_steps:
-            return step / warmup_steps
-        progress = (step - warmup_steps) / (max_steps - warmup_steps)
-        return 0.1 + 0.5 * (1 + math.cos(math.pi * progress)) * 0.9
-
-    scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
-
-    # # OneCycleLR scheduler
-    # scheduler = torch.optim.lr_scheduler.OneCycleLR(
-    #     optimizer=opt,
-    #     max_lr=args.lr,
-    #     total_steps=max_steps,
-    #     pct_start=args.pct_start,              
-    #     anneal_strategy='cos',
-    #     div_factor=args.div_factor,             
-    #     final_div_factor=args.final_div_factor 
-    # )
+    # OneCycleLR scheduler
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer=opt,
+        max_lr=args.lr,
+        total_steps=max_steps,
+        pct_start=args.pct_start,              
+        anneal_strategy='cos',
+        div_factor=args.div_factor,             
+        final_div_factor=args.final_div_factor 
+    )
 
     def evaluate():
         model.eval()
@@ -402,10 +391,19 @@ def main():
     ptr = 0
     step = 0
     t0 = time.time()
+
+    # Prepare scaler for mixed precision
+    scaler = torch.cuda.amp.GradScaler(enabled=(device == "cuda"))
+
     for epoch in range(1, args.epochs + 1):
         for _ in tqdm(range(1, batches + 1), desc=f"Epoch {epoch}/{args.epochs}"):
             step += 1
             xb, yb = get_random_batch(train_ids, args.block_size, args.batch_size, device)
+
+            # Mixed Precision Context
+            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                logits, loss = model(xb, yb)
+
             _, loss = model(xb, yb)
             opt.zero_grad(set_to_none=True)
             loss.backward()
