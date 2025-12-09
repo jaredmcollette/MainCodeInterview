@@ -197,7 +197,7 @@ def apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor, sin: torch.Tensor, co
     # For rotary embeddings, we only rotate the first half of dimensions
     q_half, q_rest = q.chunk(2, dim=-1)
     sin = sin.unsqueeze(-1)  # Expand to match dimension splitting
-    cos = cos.unsqueeze(-1))
+    cos = cos.unsqueeze(-1)
     return q * cos + rotate_half(q) * sin, k * cos + rotate_half(k) * sin
 
 # Grouped-Query Attention
