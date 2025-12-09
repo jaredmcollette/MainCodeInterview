@@ -294,7 +294,7 @@ class GPT(nn.Module):
         B, T = idx.size()
         tok = self.token_emb(idx)
         # pos = self.pos_emb[:, :T, :]
-        x = self.drop(tok + pos)
+        x = self.drop(tok)
         for block in self.blocks: x = block(x)
         x = self.ln_f(x)
         logits = self.head(x)
