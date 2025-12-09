@@ -183,7 +183,7 @@ class RotaryPositionalEmbedding(nn.Module):
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
     """Rotates half the hidden dims of the input."""
     x1, x2 = x.chunk(2, dim=-1)
-        return torch.cat((-x2, x1), dim=-1)
+    return torch.cat((-x2, x1), dim=-1)
 
 def apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor, sin: torch.Tensor, cos: torch.Tensor) -> tuple:
     """Apply rotary embeddings to query and key tensors."""
