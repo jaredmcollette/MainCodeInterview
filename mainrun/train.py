@@ -314,7 +314,7 @@ class GPT(nn.Module):
         if targets is None:
             loss = None
         else:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), label_smoothing=0.1, reduction='mean')
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
         return logits, loss
 
 def main():
@@ -365,16 +365,25 @@ def main():
     
     opt = model.configure_optimizers(args.weight_decay, args.lr, (0.9, 0.95), device)
 
-    # OneCycleLR scheduler
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer=opt,
-        max_lr=args.lr,
-        total_steps=max_steps,
-        pct_start=args.pct_start,              
-        anneal_strategy='cos',
-        div_factor=args.div_factor,             
-        final_div_factor=args.final_div_factor 
-    )
+    # Cosine annealing with linear warmup
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return step / warmup_steps
+        progress = (step - warmup_steps) / (max_steps - warmup_steps)
+        return 0.1 + 0.5 * (1 + math.cos(math.pi * progress)) * 0.9
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
+
+    # # OneCycleLR scheduler
+    # scheduler = torch.optim.lr_scheduler.OneCycleLR(
+    #     optimizer=opt,
+    #     max_lr=args.lr,
+    #     total_steps=max_steps,
+    #     pct_start=args.pct_start,              
+    #     anneal_strategy='cos',
+    #     div_factor=args.div_factor,             
+    #     final_div_factor=args.final_div_factor 
+    # )
 
     def evaluate():
         model.eval()
@@ -395,7 +404,7 @@ def main():
         for _ in tqdm(range(1, batches + 1), desc=f"Epoch {epoch}/{args.epochs}"):
             step += 1
             xb, yb = get_random_batch(train_ids, args.block_size, args.batch_size, device)
-            _, loss = model(xb, yb, label_smoothing=0.1)
+            _, loss = model(xb, yb)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
