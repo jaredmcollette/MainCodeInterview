@@ -231,8 +231,7 @@ class MLP(nn.Module):
         self.dropout = nn.Dropout(cfg.dropout)
 
     def forward(self, x):
-        # F.silu is the Swish activation function
-        # Logic: (Swish(Gate) * Value) -> Output
+        # SwiGLU: (Swish(Gate) * Value) -> Output
         x = F.silu(self.w1(x)) * self.w2(x)
         x = self.c_proj(x)
         x = self.dropout(x)
@@ -248,14 +247,14 @@ class Block(nn.Module):
         self.residual_scale = math.sqrt(2 * depth)
     def forward(self, x):
         # Should be but the code below but the mistake version performs better. Investigate later.
-        # residual = x + self.attn(self.ln1(x))
-        # x = x + residual / self.residual_scale
-        # residual = x + self.mlp(self.ln2(x))
-        # x = x + residual / self.residual_scale
-        x = x + self.attn(self.ln1(x))
-        x = x + x / self.residual_scale
-        x = x + self.mlp(self.ln2(x))
-        x = x + x / self.residual_scale
+        residual = x
+        x = residual + self.attn(self.ln1(x)) / self.residual_scale
+        residual = x
+        x = residual + self.mlp(self.ln2(x)) / self.residual_scale
+        # x = x + self.attn(self.ln1(x))
+        # x = x + x / self.residual_scale
+        # x = x + self.mlp(self.ln2(x))
+        # x = x + x / self.residual_scale
         return x
 
 class GPT(nn.Module):
