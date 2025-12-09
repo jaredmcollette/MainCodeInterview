@@ -16,7 +16,7 @@ import structlog
 class Hyperparameters:
     block_size: int = 256
     batch_size: int = 64
-    vocab_size: int = 16_000
+    vocab_size: int = 32_000
     n_layer: int = 4
     n_head: int = 8
     d_model: int = 512
@@ -159,7 +159,7 @@ def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
     # Create bias matrix
     return -slopes.view(-1, 1, 1) * dist.abs().view(1, max_len, max_len)
 
-
+# Grouped-Query Attention
 class CausalSelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
@@ -195,7 +195,6 @@ class CausalSelfAttention(nn.Module):
         # Project K,V (fewer heads)
         kv = self.kv_proj(x).view(B, T, 2, self.n_kv_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         k, v = kv.unbind(0)
-        # qkv = self.qkv(x).view(B, T, 3, self.n_head, self.head_dim).permute(2, 0, 3, 1, 4)
         
         # Apply QK-Norm
         q = self.q_norm(q)
