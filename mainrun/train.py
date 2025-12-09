@@ -20,7 +20,7 @@ class Hyperparameters:
     n_layer: int = 4
     n_head: int = 8
     d_model: int = 512
-    dropout: float = 0.1
+    dropout: float = 0.2
     lr: float = 8e-4
     pct_start: float = 0.2
     div_factor: float = 5.0
@@ -254,7 +254,6 @@ class GPT(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.token_emb = nn.Embedding(cfg.vocab_size, cfg.d_model)
-        # self.pos_emb   = nn.Parameter(torch.zeros(1, cfg.block_size, cfg.d_model))
         self.drop      = nn.Dropout(cfg.dropout)
         self.blocks    = nn.ModuleList([Block(cfg, i+1) for i in range(cfg.n_layer)])
         self.ln_f      = RMSNorm(cfg.d_model)
@@ -293,7 +292,6 @@ class GPT(nn.Module):
     def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
         B, T = idx.size()
         tok = self.token_emb(idx)
-        # pos = self.pos_emb[:, :T, :]
         x = self.drop(tok)
         for block in self.blocks: x = block(x)
         x = self.ln_f(x)
