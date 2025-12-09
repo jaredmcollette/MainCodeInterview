@@ -238,7 +238,7 @@ class Block(nn.Module):
         self.mlp  = MLP(cfg)
         self.residual_scale = math.sqrt(2 * depth)
     def forward(self, x):
-        # Should be
+        # Should be but the code below but the mistake version performs better. Investigate later.
         # residual = x + self.attn(self.ln1(x))
         # x = x + residual / self.residual_scale
         # residual = x + self.mlp(self.ln2(x))
@@ -254,7 +254,7 @@ class GPT(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.token_emb = nn.Embedding(cfg.vocab_size, cfg.d_model)
-        self.pos_emb   = nn.Parameter(torch.zeros(1, cfg.block_size, cfg.d_model))
+        # self.pos_emb   = nn.Parameter(torch.zeros(1, cfg.block_size, cfg.d_model))
         self.drop      = nn.Dropout(cfg.dropout)
         self.blocks    = nn.ModuleList([Block(cfg, i+1) for i in range(cfg.n_layer)])
         self.ln_f      = RMSNorm(cfg.d_model)
@@ -293,7 +293,7 @@ class GPT(nn.Module):
     def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
         B, T = idx.size()
         tok = self.token_emb(idx)
-        pos = self.pos_emb[:, :T, :]
+        # pos = self.pos_emb[:, :T, :]
         x = self.drop(tok + pos)
         for block in self.blocks: x = block(x)
         x = self.ln_f(x)
