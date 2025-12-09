@@ -221,7 +221,7 @@ class GPT(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.token_emb = nn.Embedding(cfg.vocab_size, cfg.d_model)
-        self.pos_emb   = nn.Parameter(torch.zeros(1, cfg.block_size, cfg.d_model))
+        self.pos_emb   = nn.Parameter(torch.normal(0.0, 0.02, (1, cfg.block_size, cfg.d_model)))
         self.drop      = nn.Dropout(cfg.dropout)
         self.blocks    = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layer)])
         self.ln_f      = RMSNorm(cfg.d_model)
