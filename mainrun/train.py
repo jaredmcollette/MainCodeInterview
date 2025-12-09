@@ -237,25 +237,35 @@ class MLP(nn.Module):
         x = self.dropout(x)
         return x
 
+# Parallel Residual Block
 class Block(nn.Module):
     def __init__(self, cfg: GPTConfig, depth: int):
         super().__init__()
-        self.ln1 = RMSNorm(cfg.d_model)
-        self.ln2 = RMSNorm(cfg.d_model)
+        # Shared layer norm for both branches 
+        self.norm = RMSNorm(cfg.d_model)
         self.attn = CausalSelfAttention(cfg)
         self.mlp  = MLP(cfg)
         self.residual_scale = math.sqrt(2 * depth)
     def forward(self, x):
         # Should be but the code below but the mistake version performs better. Investigate later.
         residual = x
-        x = residual + self.attn(self.ln1(x)) / self.residual_scale
-        residual = x
-        x = residual + self.mlp(self.ln2(x)) / self.residual_scale
-        # x = x + self.attn(self.ln1(x))
-        # x = x + x / self.residual_scale
-        # x = x + self.mlp(self.ln2(x))
-        # x = x + x / self.residual_scale
-        return x
+        x_norm = self.norm(x)
+        # Single normalization shared by both branches
+        # Compute attention and MLP in parallel
+        attn_out = self.attn(x_norm)
+        mlp_out = self.mlp(x_norm)
+
+        parallel_out = (attn_out + mlp_out) / self.residual_scale
+        return residual + parallel_out
+
+        # x = residual + self.attn(self.ln1(x)) / self.residual_scale
+        # residual = x
+        # x = residual + self.mlp(self.ln2(x)) / self.residual_scale
+        # # x = x + self.attn(self.ln1(x))
+        # # x = x + x / self.residual_scale
+        # # x = x + self.mlp(self.ln2(x))
+        # # x = x + x / self.residual_scale
+        # return x
 
 class GPT(nn.Module):
     def __init__(self, cfg: GPTConfig):
@@ -403,7 +413,7 @@ def main():
             _, loss = model(xb, yb)
             opt.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
             scheduler.step()
 
