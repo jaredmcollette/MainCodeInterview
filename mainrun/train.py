@@ -166,14 +166,19 @@ class CausalSelfAttention(nn.Module):
         assert cfg.d_model % cfg.n_head == 0
         self.head_dim = cfg.d_model // cfg.n_head
         self.n_head   = cfg.n_head
+        self.n_kv_heads = max(1, cfg.n_head // 4)
 
-        # Register ALiBi mask
+        # # Register ALiBi mask
         self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
 
-        self.qkv = nn.Linear(cfg.d_model, 3 * cfg.d_model)
-        self.proj = nn.Linear(cfg.d_model, cfg.d_model)
+        self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
+        self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_kv_heads * self.head_dim)
+        self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model)
 
-        # QK-Norm for stability
+        # self.qkv = nn.Linear(cfg.d_model, 3 * cfg.d_model)
+        # self.proj = nn.Linear(cfg.d_model, cfg.d_model)
+
+        # # QK-Norm for stability
         self.q_norm = RMSNorm(self.head_dim)
         self.k_norm = RMSNorm(self.head_dim)
 
@@ -183,12 +188,23 @@ class CausalSelfAttention(nn.Module):
 
     def forward(self, x: torch.Tensor):
         B, T, C = x.size()
-        qkv = self.qkv(x).view(B, T, 3, self.n_head, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)
 
+        # Project Q (all heads)
+        q = self.q_proj(x).view(B, T, self.n_head, self.head_dim)
+
+        # Project K,V (fewer heads)
+        kv = self.kv_proj(x).view(B, T, 2, self.n_kv_heads, self.head_dim)
+        kv = kv.permute(2, 0, 3, 1, 4)
+        k, v = kv.unbind(0)
+        # qkv = self.qkv(x).view(B, T, 3, self.n_head, self.head_dim).permute(2, 0, 3, 1, 4)
+        
         # Apply QK-Norm
         q = self.q_norm(q)
         k = self.k_norm(k)
+
+        # Expand KV to match Q heads (GQA key operation)
+        k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
+        v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
 
         # Attention scores
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
@@ -204,7 +220,7 @@ class CausalSelfAttention(nn.Module):
         att = F.dropout(att, p=self.attn_drop if self.training else 0)
         y = att @ v
         y = y.transpose(1, 2).contiguous().view(B, T, C)
-        return self.resid_drop(self.proj(y))
+        return self.resid_drop(self.o_proj(y))
 
 # Originally from Llama
 def get_hidden_dim(d_model: int, multiplier: float, multiple_of: int = 64) -> int:
