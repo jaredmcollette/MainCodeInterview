@@ -21,7 +21,7 @@ class Hyperparameters:
     n_head: int = 8
     d_model: int = 512
     dropout: float = 0.0
-    lr: float = 1e-3
+    lr: float = 8e-4
     pct_start: float = 0.2
     div_factor: float = 5.0
     final_div_factor: float = 100.0
@@ -194,17 +194,6 @@ class CausalSelfAttention(nn.Module):
         att = F.softmax(att, dim=-1)
         att = F.dropout(att, p=self.attn_drop if self.training else 0)
         y = att @ v
-
-        # # Manual attention + ALiBi        
-        # att = q @ k.transpose(-2, -1) / math.sqrt(self.head_dim)
-        # att = att + self.alibi_bias[..., :T, :T]  # Slice to sequence length  
-        # att = F.softmax(att.masked_fill(torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1), float('-inf')), dim=-1)
-        # att = F.dropout(att, p=self.attn_drop, training=self.training)
-        # y = att @ v 
-
-        # Standard Flash Attention
-        # y = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop if self.training else 0, is_causal=True)
-
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         return self.resid_drop(self.proj(y))
 
