@@ -207,34 +207,18 @@ class CausalSelfAttention(nn.Module):
         v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
 
         # Attention scores
-        # att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
 
         # Add ALiBi bias
         bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
-        # att = att + bias
-
-
-        causal_mask = torch.full((T, T), float('-1e9'), device=x.device)
-        causal_mask = torch.triu(causal_mask, diagonal=1)  # -1e9 future
-        attn_mask = bias + causal_mask.unsqueeze(0)  # Broadcast heads
-
-        # SDPA! Fused scale/softmax/dropout/matmul
-        y = F.scaled_dot_product_attention(
-            q, k, v,
-            attn_mask=attn_mask,
-            dropout_p=self.attn_drop if self.training else 0.0,
-            is_causal=False  # We handle custom
-        )
-
-        # # Apply causal mask
-        # mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
-        # att = att.masked_fill(mask, float('-inf'))
-        # # Softmax and attention
-        # att = F.softmax(att, dim=-1)
-        # att = F.dropout(att, p=self.attn_drop if self.training else 0)
-        # y = att @ v
-
-
+        att = att + bias
+        # Apply causal mask
+        mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
+        att = att.masked_fill(mask, float('-inf'))
+        # Softmax and attention
+        att = F.softmax(att, dim=-1)
+        att = F.dropout(att, p=self.attn_drop if self.training else 0)
+        y = att @ v
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         return self.resid_drop(self.o_proj(y))
 
@@ -271,7 +255,7 @@ class MLP(nn.Module):
 
 # Parallel Residual Block
 class Block(nn.Module):
-    def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.1):
+    def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.0):
         super().__init__()
         # Shared layer norm for both branches 
         self.norm = RMSNorm(cfg.d_model)
