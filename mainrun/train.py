@@ -284,10 +284,10 @@ class SparseKSelfAttention(nn.Module):
             pre_att = pre_att.masked_fill(causal_mask_sel, float('-inf'))
             
             # Compute importance scores
-            importance = torch.softmax(pre_att / self.temperature, dim=-1)
+            # importance = torch.softmax(pre_att / self.temperature, dim=-1)
             
             # For each query, select top-K tokens
-            topk_values, topk_indices = torch.topk(importance * self.temperature * 10, min(self.sparse_k, T), dim=-1)
+            topk_values, topk_indices = torch.topk(pre_att, min(self.sparse_k, T), dim=-1)
         
         # ---- Full Attention Computation (only on selected tokens) ----
         # Create attention mask with only selected tokens
