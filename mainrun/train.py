@@ -169,7 +169,7 @@ def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
         slopes = torch.tensor([1.0])  # Single head case    
     # Create distance matrix    
     positions = torch.arange(max_len)
-    dist = positions[:, None] - positions[None, :]
+    dist = positions[None, :] - positions[:, None]
     # Create bias matrix
     return -slopes.view(-1, 1, 1) * dist.view(1, max_len, max_len)
 
