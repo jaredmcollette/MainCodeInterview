@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.cuda.amp import autocast, GradScaler
 from datasets import load_dataset
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders
 from tqdm import tqdm
@@ -205,8 +206,8 @@ class CausalSelfAttention(nn.Module):
         k, v = kv.unbind(0)
         
         # Apply QK-Norm
-        q = self.q_norm(q)
-        k = self.k_norm(k)
+        # q = self.q_norm(q)
+        # k = self.k_norm(k)
 
         # Expand KV to match Q heads (GQA key operation)
         k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
@@ -428,6 +429,10 @@ def main():
     if hasattr(torch, 'compile'):
         model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
 
+    dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
+    model = model.to(dtype=dtype)
+    scaler = GradScaler('bfloat16' if dtype == torch.bfloat16 else None)
+
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
     
@@ -455,7 +460,8 @@ def main():
         for _ in tqdm(range(1, batches + 1), desc=f"Epoch {epoch}/{args.epochs}"):
             step += 1
             xb, yb = get_random_batch(train_ids, args.block_size, args.batch_size, device)
-            _, loss = model(xb, yb)
+            with autocast(dtype=dtype):
+                _, loss = model(xb, yb)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
