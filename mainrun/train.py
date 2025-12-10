@@ -302,6 +302,8 @@ class GPT(nn.Module):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if isinstance(module, nn.Linear) and module.bias is not None:
                 nn.init.zeros_(module.bias)
+        elif isinstance(module, RMSNorm):
+            nn.init.constant_(module.weight, 0.95)
     
     # --- Weight Decay logic ---
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
