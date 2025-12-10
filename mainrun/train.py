@@ -159,21 +159,27 @@ class RotaryEmbedding(nn.Module):
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float().to(device) / dim))
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self._set_cos_sin_cache(seq_len=max_position_embeddings, device=inv_freq.device)
+        inv_freq = 1.0 / (self.base ** (torch.arange(0, dim, 2).float().to(device) / dim))
+        self.register_buffer("inv_freq", inv_freq)
+        self._set_cos_sin_cache(self.max_position_embeddings, device or inv_freq.device, dtype=torch.get_default_dtype())
 
-    def _set_cos_sin_cache(self, seq_len, device):
+    def _set_cos_sin_cache(self, seq_len: int, device: torch.device, dtype: torch.dtype):
+        self.max_seq_len_cached = seq_len
         t = torch.arange(seq_len, device=device, dtype=self.inv_freq.dtype)
-        freqs = torch.outer(t, self.inv_freq)
-        emb = torch.cat((freqs, freqs), dim=-1)
-        self.register_buffer("cos_cached", emb.cos().to(torch.get_default_dtype()), persistent=False)
-        self.register_buffer("sin_cached", emb.sin().to(torch.get_default_dtype()), persistent=False)
+        freqs = torch.einsum('i,j->ij', t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1).to(dtype)
+        self.register_buffer("cos_cached", emb.cos(), persistent=False)
+        self.register_buffer("sin_cached", emb.sin(), persistent=False)
 
-    def forward(self, x: torch.Tensor, seq_len: int):
+    def forward(self, x: torch.Tensor, seq_len: int = None):
+        if seq_len is None:
+            seq_len = x.shape[-2]
         if seq_len > self.max_seq_len_cached:
-            self._set_cos_sin_cache(seq_len, x.device)
-        return self.cos_cached[:seq_len], self.sin_cached[:seq_len]
+            self._set_cos_sin_cache(seq_len, x.device, x.dtype)
+        return (
+            self.cos_cached[:seq_len].to(x.device),
+            self.sin_cached[:seq_len].to(x.device),
+        )
 
 def rotate_half(x: torch.Tensor):
     x1, x2 = x.chunk(2, dim=-1)
@@ -187,44 +193,50 @@ def apply_rotary_emb(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: t
 class CausalSelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
-        assert cfg.d_model % cfg.n_head == 0
+        assert cfg.d_model % cfg.n_head == 0, 'd_model must be divisible by n_head'
         self.head_dim = cfg.d_model // cfg.n_head
         self.n_head = cfg.n_head
-        self.n_kv_heads = max(1, cfg.n_head // 2)
+        self.n_kv_heads = max(1, cfg.n_head // 2)  # e.g., 12//2=6
+        self.head_dim = cfg.d_model // cfg.n_head  # Redundant but safe
 
-        self.rotary_emb = RotaryEmbedding(self.head_dim)  # RoPE
+        self.causal_drop = nn.Dropout(cfg.dropout)
+        self.resid_drop = nn.Dropout(cfg.dropout)
+
         self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim, bias=False)
         self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_kv_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model, bias=False)
-
-        self.attn_drop = nn.Dropout(cfg.dropout)
-        self.resid_drop = nn.Dropout(cfg.dropout)
+        self.rotary_emb = RotaryEmbedding(self.head_dim, max_position_embeddings=cfg.block_size * 2)
 
     def forward(self, x: torch.Tensor):
         B, T, C = x.shape
+
+        # QKV projections
         q = self.q_proj(x).view(B, T, self.n_head, self.head_dim).transpose(1, 2)
-        kv = self.kv_proj(x).view(B, T, 2, self.n_kv_heads, self.head_dim).transpose(2, 3)
-        k, v = kv.unbind(0)
+
+        kv = self.kv_proj(x).view(B, T, 2, self.n_kv_heads, self.head_dim)
+        kv = kv.permute(0, 2, 1, 3, 4)
+        k, v = kv.unbind(dim=1)
 
         # RoPE
-        cos, sin = self.rotary_emb(x, T)
+        cos, sin = self.rotary_emb(q, T)
         q, k = apply_rotary_emb(q, k, cos, sin)
 
-        # GQA repeat
-        k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
-        v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
+        # Repeat KV for GQA
+        repeat_factor = self.n_head // self.n_kv_heads
+        k = k.repeat_interleave(repeat_factor, dim=1)
+        v = v.repeat_interleave(repeat_factor, dim=1)
 
         # Attention
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
         # Causal mask
-        k = k.transpose(1, 2)
-        mask = torch.full((T, T), float('-inf'), device=x.device)
-        mask = torch.triu(mask, diagonal=1)
-        att = att + mask
+        causal_mask = torch.full((T, T), float('-inf'), device=x.device, dtype=att.dtype)
+        causal_mask = torch.triu(causal_mask, diagonal=1)
+        att = att + causal_mask.unsqueeze(0).unsqueeze(0)
         att = F.softmax(att, dim=-1)
-        att = self.attn_drop(att)
+        att = self.causal_drop(att)  # Drop on softmax
         y = att @ v
         y = y.transpose(1, 2).contiguous().view(B, T, C)
+
         return self.resid_drop(self.o_proj(y))
 
 # Originally from Llama
