@@ -206,7 +206,7 @@ class SparseKSelfAttention(nn.Module):
         assert cfg.d_model % cfg.n_head == 0
         self.head_dim = cfg.d_model // cfg.n_head
         self.n_head = cfg.n_head
-        self.n_kv_heads = max(1, cfg.n_head // 2)
+        self.n_kv_heads = max(1, cfg.n_head // 4)
         self.sparse_k = cfg.sparse_k
         self.temperature = cfg.sparse_gate_temp
         
@@ -360,7 +360,7 @@ class MLP(nn.Module):
 
 # Block with SparseK Attention
 class Block(nn.Module):
-    def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.1):
+    def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.2):
         super().__init__()
         self.norm = RMSNorm(cfg.d_model)
         self.attn = SparseKSelfAttention(cfg)
