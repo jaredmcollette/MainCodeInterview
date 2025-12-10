@@ -27,7 +27,7 @@ class Hyperparameters:
     final_div_factor: float = 200.0
     weight_decay: float = 0.01
     evals_per_epoch: int = 3
-    expansion_factor: float = 4
+    expansion_factor: float = 8
 
     # SparseK specific parameters
     sparse_k: int = 32  # Number of tokens to attend to
