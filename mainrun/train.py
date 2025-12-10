@@ -153,17 +153,14 @@ class GPTConfig:
     expansion_factor: float
 
 # ALiBi implementation
-def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
-    # Generate slopes (m_i) for each head
-    if n_head > 1:
-        slopes = 2 ** -(torch.arange(0, n_head) / (n_head - 1) * 8)
-    else:
-        slopes = torch.tensor([1.0])  # Single head case    
-    # Create distance matrix    
-    positions = torch.arange(max_len)
-    dist = positions[:, None] - positions[None, :]
-    # Create bias matrix
-    return -slopes.view(-1, 1, 1) * dist.abs().view(1, max_len, max_len)
+def build_alibi_mask(n_head, max_len):
+    m = torch.arange(1, n_head + 1, dtype=torch.float32).repeat_interleave(max_len, 0)
+    m = m[:n_head * max_len].view(n_head, max_len)
+    m = m / torch.max(m)
+    i = torch.arange(max_len, dtype=torch.float32).unsqueeze(1)
+    j = torch.arange(max_len, dtype=torch.float32).unsqueeze(0)
+    alibi = i * m[:, None] - j.unsqueeze(0)
+    return -alibi  # L3-style linear bias (refined)
 
 # Grouped-Query Attention
 class CausalSelfAttention(nn.Module):
@@ -265,7 +262,7 @@ class Block(nn.Module):
         self.residual_scale = math.sqrt(2 * depth)
         
     def forward(self, x):
-        # Stochastic depth
+        # Stochastic depth (disabled)
         if self.training and random.random() < self.drop_rate:
             return x
 
