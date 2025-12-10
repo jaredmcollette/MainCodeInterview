@@ -98,6 +98,7 @@ def get_titles(num_titles: int, seed: int, val_frac: float) -> str:
     n = int(num_titles * (1 - val_frac))
     return titles[:n], titles[n:]
 
+# shuffle chunks for exact epoch coverage
 class ChunkedDataLoader:
     def __init__(self, data_ids: torch.Tensor, block_size: int, batch_size: int, device: torch.device, seed: int):
         self.data = data_ids
@@ -140,6 +141,7 @@ def iter_full_split(split_ids: torch.Tensor, block_size: int, batch_size: int, d
 
 def train_tokenizer(titles: list[str], vocab_size: int, unk_token: str = "<unk>", pad_token: str = "<pad>", eos_token: str = "<eos>") -> Tokenizer:
     tokenizer = Tokenizer(models.BPE(unk_token=unk_token, fuse_unk=True, byte_fallback=True))
+    # Pre-tokenizer: Split on whitespace but keep punctuation isolated
     tokenizer.pre_tokenizer = pre_tokenizers.Sequence([
         pre_tokenizers.WhitespaceSplit(),
         pre_tokenizers.Punctuation()
@@ -147,7 +149,7 @@ def train_tokenizer(titles: list[str], vocab_size: int, unk_token: str = "<unk>"
     tokenizer.decoder = decoders.ByteLevel()
     trainer = trainers.BpeTrainer(
         vocab_size=vocab_size,
-        special_tokens=[pad_token, eos_token, unk_token],
+        special_tokens=[eos_token, unk_token],
         min_frequency=2,
         initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
         continuing_subword_prefix="##"
