@@ -153,70 +153,106 @@ class GPTConfig:
     dropout: float
     expansion_factor: float
 
-# ALiBi implementation
-def build_alibi_mask(n_head, max_len):
-    m = torch.arange(1, n_head + 1, dtype=torch.float32).repeat_interleave(max_len, 0)
-    m = m[:n_head * max_len].view(n_head, max_len)
-    m = m / torch.max(m)
-    i = torch.arange(max_len, dtype=torch.float32).unsqueeze(1)
-    j = torch.arange(max_len, dtype=torch.float32).unsqueeze(0)
-    alibi = i * m[:, None] - j.unsqueeze(0)
-    return -alibi  # L3-style linear bias (refined)
+# Llama 3 Rotary Position Embeddings (exact impl from Meta's Llama 3 recipes)
+class RotaryEmbedding(nn.Module):
+    def __init__(self, dim: int, max_position_embeddings: int = 2048, base: float = 500000.0, device=None):
+        super().__init__()
+        self.dim = dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+        inv_freq = 1.0 / (self.base ** (torch.arange(0, dim, 2).float().to(device) / dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        # Precompute cache at init
+        self._set_cos_sin_cache(
+            seq_len=max_position_embeddings, device=inv_freq.device, dtype=torch.get_default_dtype()
+        )
 
-# Grouped-Query Attention
+    def _set_cos_sin_cache(self, seq_len: int, device: torch.device, dtype: torch.dtype):
+        self.max_seq_len_cached = seq_len
+        t = torch.arange(self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype)
+        freqs = torch.einsum("i,j->ij", t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1).to(dtype)
+        self.register_buffer("cos_cached", emb.cos(), persistent=False)
+        self.register_buffer("sin_cached", emb.sin(), persistent=False)
+
+    def forward(self, x: torch.Tensor, seq_len: int = None):
+        # x provides device/dtype; seq_len=T
+        if seq_len is None:
+            seq_len = x.shape[-2]
+        if seq_len > getattr(self, "max_seq_len_cached", 0):
+            self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
+        return (
+            self.cos_cached[:seq_len].to(dtype=x.dtype, device=x.device),
+            self.sin_cached[:seq_len].to(dtype=x.dtype, device=x.device),
+        )
+
+def rotate_half(x: torch.Tensor):
+    """Rotate half the hidden dims (Llama 3 exact)."""
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+def apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
+    """Apply RoPE to q & k (Llama 3: no v). Broadcasts cos/sin."""
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
+
+# Grouped-Query Attention with Llama 3 RoPE
 class CausalSelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
         assert cfg.d_model % cfg.n_head == 0
         self.head_dim = cfg.d_model // cfg.n_head
-        self.n_head   = cfg.n_head
+        self.n_head = cfg.n_head
         self.n_kv_heads = max(1, cfg.n_head // 4)
 
-        # # Register ALiBi mask
-        self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
+        # Llama 3: RoPE replaces ALiBi
+        self.rotary_emb = RotaryEmbedding(
+            self.head_dim, max_position_embeddings=cfg.block_size * 4  # Slight buffer
+        )
 
-        self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
-        self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_kv_heads * self.head_dim)
-        self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model)
+        # Llama 3: bias=False on all projs
+        self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim, bias=False)
+        self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_kv_heads * self.head_dim, bias=False)
+        self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model, bias=False)
 
-        # # QK-Norm for stability
+        # QK-Norm (Llama 3: no; kept commented)
         self.q_norm = RMSNorm(self.head_dim)
         self.k_norm = RMSNorm(self.head_dim)
 
-        self.attn_drop = cfg.dropout
-        self.resid_drop= nn.Dropout(cfg.dropout)
+        self.attn_drop = nn.Dropout(cfg.dropout)  # Llama 3: nn.Dropout (was float)
+        self.resid_drop = nn.Dropout(cfg.dropout)
 
     def forward(self, x: torch.Tensor):
-        B, T, C = x.size()
+        B, T, C = x.shape
 
-        # Project Q (all heads)
+        # Q (all heads)
         q = self.q_proj(x).view(B, T, self.n_head, self.head_dim).permute(0, 2, 1, 3)
 
-        # Project K,V (fewer heads)
+        # KV (fewer heads; unchanged permute)
         kv = self.kv_proj(x).view(B, T, 2, self.n_kv_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         k, v = kv.unbind(0)
-        
-        # Apply QK-Norm
+
+        # Llama 3 RoPE: apply to q/k (before GQA repeat)
+        cos, sin = self.rotary_emb(q, T)  # [T, hd]; broadcasts as [1, heads?, T, hd]
+        q, k = apply_rotary_pos_emb(q, k, cos, sin)
+
+        # QK-Norm
         # q = self.q_norm(q)
         # k = self.k_norm(k)
 
-        # Expand KV to match Q heads (GQA key operation)
+        # GQA: repeat k/v to nh
         k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
         v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
 
-        # Attention scores
+        # Attention (Llama 3: scale, causal mask, softmax, drop)
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
-
-        # Add ALiBi bias
-        bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
-        att = att + bias
-        # Apply causal mask
         mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
-        att = att.masked_fill(mask, float('-inf'))
-        # Softmax and attention
+        att = att.masked_fill(mask.unsqueeze(0).unsqueeze(0), float('-inf'))
         att = F.softmax(att, dim=-1)
-        att = F.dropout(att, p=self.attn_drop if self.training else 0)
-        y = att @ v
+        att = self.attn_drop(att)
+        y = att @ v  # [B, nh, T, hd]
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         return self.resid_drop(self.o_proj(y))
 
@@ -355,7 +391,7 @@ class GPT(nn.Module):
         if targets is None:
             loss = None
         else:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), label_smoothing=0.1, reduction='mean')
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
         return logits, loss
 
 class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
