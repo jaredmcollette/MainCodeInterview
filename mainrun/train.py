@@ -153,69 +153,75 @@ class GPTConfig:
     dropout: float
     expansion_factor: float
 
-# ALiBi implementation
-def build_alibi_mask(n_head, max_len):
-    m = torch.arange(1, n_head + 1, dtype=torch.float32).repeat_interleave(max_len, 0)
-    m = m[:n_head * max_len].view(n_head, max_len)
-    m = m / torch.max(m)
-    i = torch.arange(max_len, dtype=torch.float32).unsqueeze(1)
-    j = torch.arange(max_len, dtype=torch.float32).unsqueeze(0)
-    alibi = i * m[:, None] - j.unsqueeze(0)
-    return -alibi  # L3-style linear bias (refined)
+class RotaryEmbedding(nn.Module):
+    def __init__(self, dim: int, max_position_embeddings: int = 2048, base: float = 500000.0, device=None):
+        super().__init__()
+        self.dim = dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float().to(device) / dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self._set_cos_sin_cache(seq_len=max_position_embeddings, device=inv_freq.device)
 
-# Grouped-Query Attention
+    def _set_cos_sin_cache(self, seq_len, device):
+        t = torch.arange(seq_len, device=device, dtype=self.inv_freq.dtype)
+        freqs = torch.outer(t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        self.register_buffer("cos_cached", emb.cos().to(torch.get_default_dtype()), persistent=False)
+        self.register_buffer("sin_cached", emb.sin().to(torch.get_default_dtype()), persistent=False)
+
+    def forward(self, x: torch.Tensor, seq_len: int):
+        if seq_len > self.max_seq_len_cached:
+            self._set_cos_sin_cache(seq_len, x.device)
+        return self.cos_cached[:seq_len], self.sin_cached[:seq_len]
+
+def rotate_half(x: torch.Tensor):
+    x1, x2 = x.chunk(2, dim=-1)
+    return torch.cat((-x2, x1), dim=-1)
+
+def apply_rotary_emb(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
+    q_rot = (q * cos) + (rotate_half(q) * sin)
+    k_rot = (k * cos) + (rotate_half(k) * sin)
+    return q_rot, k_rot
+
 class CausalSelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
         assert cfg.d_model % cfg.n_head == 0
         self.head_dim = cfg.d_model // cfg.n_head
-        self.n_head   = cfg.n_head
-        self.n_kv_heads = max(1, cfg.n_head // 4)
+        self.n_head = cfg.n_head
+        self.n_kv_heads = max(1, cfg.n_head // 2)
 
-        # # Register ALiBi mask
-        self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
+        self.rotary_emb = RotaryEmbedding(self.head_dim)  # RoPE
+        self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim, bias=False)
+        self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_kv_heads * self.head_dim, bias=False)
+        self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model, bias=False)
 
-        self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
-        self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_kv_heads * self.head_dim)
-        self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model)
-
-        # # QK-Norm for stability
-        self.q_norm = RMSNorm(self.head_dim)
-        self.k_norm = RMSNorm(self.head_dim)
-
-        self.attn_drop = cfg.dropout
-        self.resid_drop= nn.Dropout(cfg.dropout)
+        self.attn_drop = nn.Dropout(cfg.dropout)
+        self.resid_drop = nn.Dropout(cfg.dropout)
 
     def forward(self, x: torch.Tensor):
-        B, T, C = x.size()
-
-        # Project Q (all heads)
-        q = self.q_proj(x).view(B, T, self.n_head, self.head_dim).permute(0, 2, 1, 3)
-
-        # Project K,V (fewer heads)
-        kv = self.kv_proj(x).view(B, T, 2, self.n_kv_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        B, T, C = x.shape
+        q = self.q_proj(x).view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+        kv = self.kv_proj(x).view(B, T, 2, self.n_kv_heads, self.head_dim).transpose(2, 3)
         k, v = kv.unbind(0)
-        
-        # Apply QK-Norm
-        # q = self.q_norm(q)
-        # k = self.k_norm(k)
 
-        # Expand KV to match Q heads (GQA key operation)
+        # RoPE
+        cos, sin = self.rotary_emb(x, T)
+        q, k = apply_rotary_emb(q, k, cos, sin)
+
+        # GQA repeat
         k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
         v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
 
-        # Attention scores
+        # Attention
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
-
-        # Add ALiBi bias
-        bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
-        att = att + bias
-        # Apply causal mask
-        mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
-        att = att.masked_fill(mask, float('-inf'))
-        # Softmax and attention
+        # Causal mask
+        mask = torch.full((T, T), float('-inf'), device=x.device)
+        mask = torch.triu(mask, diagonal=1)
+        att = att + mask
         att = F.softmax(att, dim=-1)
-        att = F.dropout(att, p=self.attn_drop if self.training else 0)
+        att = self.attn_drop(att)
         y = att @ v
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         return self.resid_drop(self.o_proj(y))
