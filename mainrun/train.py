@@ -364,12 +364,10 @@ class GPT(nn.Module):
         ]
 
         # Using fused AdamW if available for speed
-        fused_available = 'fused' in torch.optim.AdamW.__init__.__code__.co_varnames
-        use_fused = fused_available and 'cuda' in device_type
-        extra_args = dict(fused=True) if use_fused else dict()
-        
+        fused = 'fused' in torch.optim.AdamW.__init__.__code__.co_varnames and 'cuda' in device_type
+
         # Create AdamW optimizer
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, fused=fused)
         return optimizer
 
     def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
@@ -459,7 +457,10 @@ def main():
     )
     model = GPT(cfg).to(device)
     if hasattr(torch, 'compile'):
-        model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
+        try:
+            model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
+        except:
+            pass
 
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
