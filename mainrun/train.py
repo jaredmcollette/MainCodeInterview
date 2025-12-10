@@ -7,7 +7,6 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from lion_pytorch import Lion
 from datasets import load_dataset
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders
 from tqdm import tqdm
@@ -320,12 +319,12 @@ class GPT(nn.Module):
         ]
 
         # Using fused AdamW if available for speed
-        # fused_available = 'fused' in torch.optim.AdamW.__init__.__code__.co_varnames
-        # use_fused = fused_available and 'cuda' in device_type
-        # extra_args = dict(fused=True) if use_fused else dict()
+        fused_available = 'fused' in torch.optim.AdamW.__init__.__code__.co_varnames
+        use_fused = fused_available and 'cuda' in device_type
+        extra_args = dict(fused=True) if use_fused else dict()
         
         # Create Lion optimizer
-        optimizer = Lion(optim_groups, lr=learning_rate, betas=betas)
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas)
         return optimizer
 
     def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
