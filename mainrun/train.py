@@ -17,7 +17,7 @@ class Hyperparameters:
     block_size: int = 256
     batch_size: int = 64
     vocab_size: int = 12_000
-    n_layer: int = 8
+    n_layer: int = 4
     n_head: int = 8
     d_model: int = 512
     dropout: float = 0.1
@@ -171,7 +171,7 @@ def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
     positions = torch.arange(max_len)
     dist = positions[:, None] - positions[None, :]
     # Create bias matrix
-    return -slopes.view(-1, 1, 1) * dist.abs().view(1, max_len, max_len)
+    return -slopes.view(-1, 1, 1) * dist.view(1, max_len, max_len)
 
 class AdaptiveSparseKGate(nn.Module):
     """Learnable gating mechanism for adaptive K selection"""
@@ -300,7 +300,7 @@ class SparseKSelfAttention(nn.Module):
 
         # Compute full attention on selected tokens
         att = torch.matmul(q, k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
-        att *= self.selection_scale
+        att = att * self.selection_scale
         
         # Add ALiBi bias
         bias = self.alibi_bias[:, :T, :T]
