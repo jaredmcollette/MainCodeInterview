@@ -155,7 +155,7 @@ class GPTConfig:
 
 # Llama 3 Rotary Position Embeddings (exact impl from Meta's Llama 3 recipes)
 class RotaryEmbedding(nn.Module):
-    def __init__(self, dim: int, max_position_embeddings: int = 2048, base: float = 500000.0, device=None):
+    def __init__(self, dim: int, max_position_embeddings: int = 2048, base: float = 10000.0, device=None):
         super().__init__()
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
@@ -341,9 +341,9 @@ class GPT(nn.Module):
         self.apply(self._init_weights)
 
         # Depth-scaled init for output layers
-        for block in self.blocks:
-            nn.init.normal_(block.attn.o_proj.weight, mean=0.0, std=0.02 / math.sqrt(2 * cfg.n_layer))
-            nn.init.normal_(block.ffn.c_proj.weight, mean=0.0, std=0.02 / math.sqrt(2 * cfg.n_layer))
+        # for block in self.blocks:
+        #     nn.init.normal_(block.attn.o_proj.weight, mean=0.0, std=0.02 / math.sqrt(2 * cfg.n_layer))
+        #     nn.init.normal_(block.ffn.c_proj.weight, mean=0.0, std=0.02 / math.sqrt(2 * cfg.n_layer))
 
         self.head.weight = self.token_emb.weight
 
