@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from torch.optim import Lion
+from lion_pytorch import Lion
 from datasets import load_dataset
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders
 from tqdm import tqdm
