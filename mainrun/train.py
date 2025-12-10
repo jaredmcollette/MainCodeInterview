@@ -22,7 +22,7 @@ class Hyperparameters:
     d_model: int = 512
     dropout: float = 0.1
     lr: float = 1e-3
-    pct_start: float = 0.3
+    pct_start: float = 0.1
     div_factor: float = 5.0
     final_div_factor: float = 100.0
     weight_decay: float = 0.01
