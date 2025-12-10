@@ -217,6 +217,7 @@ class CausalSelfAttention(nn.Module):
         # Attention
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
         # Causal mask
+        k = k.transpose(1, 2)
         mask = torch.full((T, T), float('-inf'), device=x.device)
         mask = torch.triu(mask, diagonal=1)
         att = att + mask
