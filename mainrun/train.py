@@ -257,12 +257,40 @@ class Block(nn.Module):
         self.attn_norm = RMSNorm(cfg.d_model)
         self.ffn_norm = RMSNorm(cfg.d_model)
         self.attn = CausalSelfAttention(cfg)
-        self.mlp = MLP(cfg)  # Renamed for clarity
+        self.ffn = MLP(cfg)
 
     def forward(self, x):
         x = x + self.attn(self.attn_norm(x))
-        x = x + self.mlp(self.ffn_norm(x))
+        x = x + self.ffn(self.ffn_norm(x))
         return x
+
+# Parallel Residual Block
+# class Block(nn.Module):
+#     def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.0):
+#         super().__init__()
+#         # Shared layer norm for both branches 
+#         self.attn_norm = RMSNorm(cfg.d_model)
+#         self.ffn_norm = RMSNorm(cfg.d_model)
+        
+#         self.attn = CausalSelfAttention(cfg)
+#         self.ffn  = MLP(cfg)
+#         # self.drop_rate = drop_rate * (depth / cfg.n_layer)
+#         self.residual_scale = math.sqrt(2 * depth)
+        
+#     def forward(self, x):
+#         # Stochastic depth (disabled)
+#         # if self.training and random.random() < self.drop_rate:
+#         #     return x
+
+#         residual = x
+#         x_norm = self.norm(x)
+#         # Single normalization shared by both branches
+#         # Compute attention and MLP in parallel
+#         attn_out = self.attn(x_norm)
+#         mlp_out = self.ffn(x_norm)
+
+#         parallel_out = (attn_out + mlp_out) / self.residual_scale
+#         return residual + parallel_out
 
 class GPT(nn.Module):
     def __init__(self, cfg: GPTConfig):
@@ -279,7 +307,7 @@ class GPT(nn.Module):
         # Depth-scaled init for output layers
         for block in self.blocks:
             nn.init.normal_(block.attn.o_proj.weight, mean=0.0, std=0.02 / math.sqrt(2 * cfg.n_layer))
-            nn.init.normal_(block.mlp.c_proj.weight, mean=0.0, std=0.02 / math.sqrt(2 * cfg.n_layer))
+            nn.init.normal_(block.ffn.c_proj.weight, mean=0.0, std=0.02 / math.sqrt(2 * cfg.n_layer))
 
         self.head.weight = self.token_emb.weight
 
@@ -290,7 +318,7 @@ class GPT(nn.Module):
             if isinstance(module, nn.Linear) and module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, RMSNorm):
-            nn.init.constant_(module.weight, 0.95)
+            nn.init.constant_(module.weight, 1.0)
     
     # --- Weight Decay logic ---
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
