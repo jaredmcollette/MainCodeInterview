@@ -314,7 +314,7 @@ class GPT(nn.Module):
     @staticmethod
     def _init_weights(module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            nn.init.normal_(module.weight, mean=0.0, std=0.02 / math.sqrt(2 * module.weight.shape[-1] // cfg.d_model))
             if isinstance(module, nn.Linear) and module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, RMSNorm):
@@ -355,7 +355,7 @@ class GPT(nn.Module):
         if targets is None:
             loss = None
         else:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), label_smoothing=0.1, reduction='mean')
         return logits, loss
 
 class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
