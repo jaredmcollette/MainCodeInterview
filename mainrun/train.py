@@ -153,21 +153,16 @@ class GPTConfig:
     dropout: float
     expansion_factor: float
 
+
 def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
-    """
-    Standard geometric ALiBi bias: slopes[h] * (j - i), with slopes decaying geometrically.
-    Shape: (n_head, max_len, max_len). CPU-computed buffer.
-    """
-    dtype = torch.bfloat16
-    device = torch.device('cpu')
+    dtype = torch.float32
+    device = None
 
     def get_slopes(nh: int):
         if nh == 0:
             return torch.empty((0,), dtype=dtype, device=device)
-        heads = torch.arange(nh, dtype=torch.float32, device=device)
-        log_factor = torch.tensor(-8.0 * math.log(2.0) / nh, dtype=torch.float32, device=device)
-        slopes = torch.exp(heads * log_factor).to(dtype)
-        return slopes.flip(0)  # Safe reverse, large→small slopes
+        slopes = torch.arange(1, nh + 1, dtype=torch.float32, device=device) / nh
+        return slopes.to(dtype)
 
     slopes = get_slopes(n_head)
     arange = torch.arange(max_len, dtype=dtype, device=device)
