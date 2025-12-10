@@ -252,7 +252,7 @@ class MLP(nn.Module):
         return x
 
 class Block(nn.Module):
-    def __init__(self, cfg: GPTConfig):
+    def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.0):
         super().__init__()
         self.attn_norm = RMSNorm(cfg.d_model)
         self.ffn_norm = RMSNorm(cfg.d_model)
