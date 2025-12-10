@@ -197,8 +197,8 @@ class CausalSelfAttention(nn.Module):
         k, v = kv.unbind(0)
         
         # Apply QK-Norm
-        q = self.q_norm(q)
-        k = self.k_norm(k)
+        # q = self.q_norm(q)
+        # k = self.k_norm(k)
 
         # Expand KV to match Q heads (GQA key operation)
         k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
