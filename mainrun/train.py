@@ -18,7 +18,7 @@ class Hyperparameters:
     batch_size: int = 64
     vocab_size: int = 12_000
     n_layer: int = 4
-    n_head: int = 16
+    n_head: int = 8
     d_model: int = 512
     dropout: float = 0.1
     lr: float = 1e-3
@@ -206,7 +206,7 @@ class SparseKSelfAttention(nn.Module):
         assert cfg.d_model % cfg.n_head == 0
         self.head_dim = cfg.d_model // cfg.n_head
         self.n_head = cfg.n_head
-        self.n_kv_heads = max(1, cfg.n_head // 4)
+        self.n_kv_heads = max(1, cfg.n_head // 2)
         self.sparse_k = cfg.sparse_k
         self.temperature = cfg.sparse_gate_temp
         
