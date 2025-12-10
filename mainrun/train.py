@@ -172,7 +172,7 @@ class CausalSelfAttention(nn.Module):
         assert cfg.d_model % cfg.n_head == 0
         self.head_dim = cfg.d_model // cfg.n_head
         self.n_head   = cfg.n_head
-        self.n_kv_heads = max(1, cfg.n_head // 4)
+        self.n_kv_heads = 1
 
         # # Register ALiBi mask
         self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
@@ -181,16 +181,12 @@ class CausalSelfAttention(nn.Module):
         self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_kv_heads * self.head_dim)
         self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model)
 
-        # self.qkv = nn.Linear(cfg.d_model, 3 * cfg.d_model)
-        # self.proj = nn.Linear(cfg.d_model, cfg.d_model)
-
         # # QK-Norm for stability
         self.q_norm = RMSNorm(self.head_dim)
         self.k_norm = RMSNorm(self.head_dim)
 
         self.attn_drop = cfg.dropout
         self.resid_drop= nn.Dropout(cfg.dropout)
-        # self.register_buffer("tril", torch.tril(torch.ones(cfg.block_size, cfg.block_size)))
 
     def forward(self, x: torch.Tensor):
         B, T, C = x.size()
@@ -273,7 +269,6 @@ class Block(nn.Module):
         if self.training and random.random() < self.drop_rate:
             return x
 
-        # Should be but the code below but the mistake version performs better. Investigate later.
         residual = x
         x_norm = self.norm(x)
         # Single normalization shared by both branches
@@ -283,15 +278,6 @@ class Block(nn.Module):
 
         parallel_out = (attn_out + mlp_out) / self.residual_scale
         return residual + parallel_out
-
-        # x = residual + self.attn(self.ln1(x)) / self.residual_scale
-        # residual = x
-        # x = residual + self.mlp(self.ln2(x)) / self.residual_scale
-        # # x = x + self.attn(self.ln1(x))
-        # # x = x + x / self.residual_scale
-        # # x = x + self.mlp(self.ln2(x))
-        # # x = x + x / self.residual_scale
-        # return x
 
 class GPT(nn.Module):
     def __init__(self, cfg: GPTConfig):
