@@ -296,7 +296,6 @@ class GPT(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
         self.cfg = cfg
-        self.d_model   = cfg.d_model
         self.token_emb = nn.Embedding(cfg.vocab_size, cfg.d_model)
         self.drop      = nn.Dropout(cfg.dropout)
         self.blocks    = nn.ModuleList([Block(cfg, i+1) for i in range(cfg.n_layer)])
@@ -312,9 +311,10 @@ class GPT(nn.Module):
 
         self.head.weight = self.token_emb.weight
 
-    def _init_weights(self, module):
+    @staticmethod
+    def _init_weights(module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02 / math.sqrt(2 * module.weight.shape[-1] // self.d_model))
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if isinstance(module, nn.Linear) and module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, RMSNorm):
@@ -355,7 +355,7 @@ class GPT(nn.Module):
         if targets is None:
             loss = None
         else:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), label_smoothing=0.1, reduction='mean')
         return logits, loss
 
 class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
