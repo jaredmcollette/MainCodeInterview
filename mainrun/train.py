@@ -7,7 +7,6 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from torch.cuda.amp import autocast, GradScaler
 from datasets import load_dataset
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders
 from tqdm import tqdm
@@ -22,7 +21,7 @@ class Hyperparameters:
     n_head: int = 8
     d_model: int = 512
     dropout: float = 0.1
-    lr: float = 1e-3
+    lr: float = 8e-4
     warmup_frac: float = 0.1
     pct_start: float = 0.2
     div_factor: float = 5.0
@@ -429,10 +428,6 @@ def main():
     if hasattr(torch, 'compile'):
         model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
 
-    dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
-    model = model.to(dtype=dtype)
-    scaler = GradScaler('bfloat16' if dtype == torch.bfloat16 else None)
-
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
     
@@ -460,8 +455,7 @@ def main():
         for _ in tqdm(range(1, batches + 1), desc=f"Epoch {epoch}/{args.epochs}"):
             step += 1
             xb, yb = get_random_batch(train_ids, args.block_size, args.batch_size, device)
-            with autocast(dtype=dtype):
-                _, loss = model(xb, yb)
+            _, loss = model(xb, yb)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
