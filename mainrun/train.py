@@ -20,7 +20,7 @@ class Hyperparameters:
     n_layer: int = 4
     n_head: int = 8
     d_model: int = 512
-    dropout: float = 0.1
+    dropout: float = 0.2
     lr: float = 1e-3
     pct_start: float = 0.2
     div_factor: float = 5.0
@@ -30,9 +30,9 @@ class Hyperparameters:
     expansion_factor: float = 6
 
     # SparseK specific parameters
-    sparse_k: int = 16  # Number of tokens to attend to
+    sparse_k: int = 32  # Number of tokens to attend to
     sparse_gate_temp: float = 0.3  # Temperature for gating
-    sparse_initial_k: int = 32  # Starting K value for adaptive mechanism
+    sparse_initial_k: int = 64  # Starting K value for adaptive mechanism
     
     epochs: int = 7
     seed: int = 1337
