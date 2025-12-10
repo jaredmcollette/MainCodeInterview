@@ -98,11 +98,37 @@ def get_titles(num_titles: int, seed: int, val_frac: float) -> str:
     n = int(num_titles * (1 - val_frac))
     return titles[:n], titles[n:]
 
-def get_random_batch(split_ids: torch.Tensor, block_size: int, batch_size: int, device: torch.device):
-    starts = torch.randint(0, len(split_ids) - block_size - 1, (batch_size,))
-    x = torch.stack([split_ids[i:i+block_size] for i in starts])
-    y = torch.stack([split_ids[i+1:i+block_size+1] for i in starts])
-    return x.to(device), y.to(device)
+class ChunkedDataLoader:
+    def __init__(self, data_ids: torch.Tensor, block_size: int, batch_size: int, device: torch.device, seed: int):
+        self.data = data_ids
+        self.block_size = block_size
+        self.batch_size = batch_size
+        self.device = device
+        # Calculate how many full blocks fit in the data
+        n_blocks = (len(data_ids) - 1) // block_size
+        self.indices = torch.arange(0, n_blocks * block_size, block_size)
+        self.generator = torch.Generator().manual_seed(seed)
+        
+    def __iter__(self):
+        # Shuffle indices at the start of each epoch
+        perms = torch.randperm(len(self.indices), generator=self.generator)
+        shuffled_indices = self.indices[perms]
+        
+        for i in range(0, len(shuffled_indices), self.batch_size):
+            batch_indices = shuffled_indices[i : i + self.batch_size]
+            if len(batch_indices) < self.batch_size:
+                continue # Drop last incomplete batch
+                
+            x_list = []
+            y_list = []
+            for idx in batch_indices:
+                x_list.append(self.data[idx : idx + self.block_size])
+                y_list.append(self.data[idx + 1 : idx + self.block_size + 1])
+                
+            yield torch.stack(x_list).to(self.device), torch.stack(y_list).to(self.device)
+
+    def __len__(self):
+        return len(self.indices) // self.batch_size
 
 def iter_full_split(split_ids: torch.Tensor, block_size: int, batch_size: int, device: torch.device):
     span = block_size * batch_size + 1
@@ -421,13 +447,14 @@ def main():
     train_ids = torch.tensor(tok.encode(train_text), dtype=torch.long)
     val_ids = torch.tensor(tok.encode(val_text), dtype=torch.long)
     
-    batches = len(train_ids) // (args.block_size * args.batch_size)
-    max_steps = args.epochs * batches
-    eval_interval = batches // args.evals_per_epoch
+    train_loader = ChunkedDataLoader(train_ids, args.block_size, args.batch_size, device, args.seed)
+    batches_per_epoch = len(train_loader)
+    max_steps = args.epochs * batches_per_epoch
+    eval_interval = batches_per_epoch // args.evals_per_epoch
     logger.log("dataset_info",
                titles_count=len(train_titles),
                epochs=args.epochs,
-               batches_per_epoch=batches,
+               batches_per_epoch=batches_per_epoch,
                tokens_per_epoch=len(train_ids),
                vocab_size=tok.vocab_size)
 
@@ -468,9 +495,8 @@ def main():
     step = 0
     t0 = time.time()
     for epoch in range(1, args.epochs + 1):
-        for _ in tqdm(range(1, batches + 1), desc=f"Epoch {epoch}/{args.epochs}"):
+        for xb, yb in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}"):
             step += 1
-            xb, yb = get_random_batch(train_ids, args.block_size, args.batch_size, device)
             _, loss = model(xb, yb)
             opt.zero_grad(set_to_none=True)
             loss.backward()
