@@ -17,11 +17,11 @@ class Hyperparameters:
     block_size: int = 256
     batch_size: int = 64
     vocab_size: int = 12_000
-    n_layer: int = 4
+    n_layer: int = 8
     n_head: int = 8
     d_model: int = 512
     dropout: float = 0.1
-    lr: float = 2e-3
+    lr: float = 1e-3
     pct_start: float = 0.2
     div_factor: float = 5.0
     final_div_factor: float = 100.0
