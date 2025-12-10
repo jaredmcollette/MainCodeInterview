@@ -257,11 +257,11 @@ class Block(nn.Module):
         self.attn_norm = RMSNorm(cfg.d_model)
         self.ffn_norm = RMSNorm(cfg.d_model)
         self.attn = CausalSelfAttention(cfg)
-        self.ffn = MLP(cfg)  # Renamed for clarity
+        self.mlp = MLP(cfg)  # Renamed for clarity
 
     def forward(self, x):
         x = x + self.attn(self.attn_norm(x))
-        x = x + self.ffn(self.ffn_norm(x))
+        x = x + self.mlp(self.ffn_norm(x))
         return x
 
 class GPT(nn.Module):
