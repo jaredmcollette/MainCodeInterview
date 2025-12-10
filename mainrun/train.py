@@ -16,7 +16,7 @@ import structlog
 class Hyperparameters:
     block_size: int = 256
     batch_size: int = 64
-    vocab_size: int = 16_000
+    vocab_size: int = 12_000
     n_layer: int = 4
     n_head: int = 8
     d_model: int = 512
@@ -43,7 +43,8 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x):
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
+        rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).sqrt()
+        return x / rms * self.weight
 
 def configure_logging(log_file: str):
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
