@@ -296,7 +296,7 @@ class SparseKSelfAttention(nn.Module):
         # Mark top-K positions
         sparse_mask.scatter_(-1, topk_indices, True)
         
-        router_scale = torch.softmax(self.topk_router(x.mean(dim=1)), dim=-1)[:, None, None]
+        router_scale = torch.softmax(self.topk_router(x.mean(dim=1)), dim=-1).unsqueeze(-1).unsqueeze(-1)
 
         # Compute full attention on selected tokens
         att = torch.matmul(q, k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
