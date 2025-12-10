@@ -17,9 +17,9 @@ class Hyperparameters:
     block_size: int = 256
     batch_size: int = 64
     vocab_size: int = 12_000
-    n_layer: int = 2
+    n_layer: int = 4
     n_head: int = 8
-    d_model: int = 1024
+    d_model: int = 512
     dropout: float = 0.1
     lr: float = 1e-3
     pct_start: float = 0.2
@@ -30,7 +30,7 @@ class Hyperparameters:
     expansion_factor: float = 6
 
     # SparseK specific parameters
-    sparse_k: int = 32  # Number of tokens to attend to
+    sparse_k: int = 16  # Number of tokens to attend to
     sparse_gate_temp: float = 0.3  # Temperature for gating
     sparse_initial_k: int = 64  # Starting K value for adaptive mechanism
     
