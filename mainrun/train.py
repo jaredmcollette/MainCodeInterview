@@ -487,7 +487,7 @@ def main():
         n_head     = args.n_head,
         d_model    = args.d_model,
         dropout    = args.dropout,
-        expansion_factor = args.expansion_factor
+        expansion_factor = args.expansion_factor,
         sparse_k   = args.sparse_k,
         sparse_gate_temp = args.sparse_gate_temp,
         sparse_initial_k = args.sparse_initial_k
