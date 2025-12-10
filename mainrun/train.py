@@ -488,6 +488,9 @@ def main():
         d_model    = args.d_model,
         dropout    = args.dropout,
         expansion_factor = args.expansion_factor
+        sparse_k   = args.sparse_k,
+        sparse_gate_temp = args.sparse_gate_temp,
+        sparse_initial_k = args.sparse_initial_k
     )
     model = GPT(cfg).to(device)
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
