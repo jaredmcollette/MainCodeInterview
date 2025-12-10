@@ -287,23 +287,24 @@ class SparseKSelfAttention(nn.Module):
             importance = torch.softmax(pre_att / self.temperature, dim=-1)
             
             # For each query, select top-K tokens
-            topk_values, topk_indices = torch.topk(pre_att, k=min(self.sparse_k, T), dim=-1)
+            topk_values, topk_indices = torch.topk(importance * self.temperature * 10, self.sparse_k, dim=-1)
         
         # ---- Full Attention Computation (only on selected tokens) ----
         # Create attention mask with only selected tokens
         sparse_mask = torch.zeros_like(pre_att, dtype=torch.bool)
         
         # Mark top-K positions
-        for b in range(B):
-            for h in range(self.n_head):
-                sparse_mask[b, h].scatter_(1, topk_indices[b, h], True)
+        sparse_mask.scatter_(-1, topk_indices, True)
         
+        router_scale = self.topk_router(x.mean(1)).unsqueeze(1) / self.n_head
+
         # Compute full attention on selected tokens
         att = torch.matmul(q, k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
+        att *= self.selection_scale
         
         # Add ALiBi bias
         bias = self.alibi_bias[:, :T, :T]
-        att = att + bias
+        att += bias * router_scale
         
         # Apply sparse mask + causal mask
         combined_mask = self.causal_mask[:T, :T] | (~sparse_mask)
@@ -313,7 +314,8 @@ class SparseKSelfAttention(nn.Module):
         att = F.softmax(att, dim=-1)
         
         # Incorporate gate scores to adapt attention weights
-        gate_factor = gate_scores.unsqueeze(1).unsqueeze(-1)  # [B, 1, T, 1]
+        gate_factor = gate_scores.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
+        att *= gate_factor.clamp_(min=0., max=1.)
         
         # Apply attention dropout
         att = F.dropout(att, p=self.attn_drop if self.training else 0)
