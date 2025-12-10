@@ -22,7 +22,7 @@ class Hyperparameters:
     d_model: int = 512
     dropout: float = 0.1
     lr: float = 1e-3
-    warmup_frac: float = 0.2
+    warmup_frac: float = 0.1
     pct_start: float = 0.2
     div_factor: float = 5.0
     final_div_factor: float = 100.0
@@ -259,7 +259,7 @@ class Block(nn.Module):
         self.norm = RMSNorm(cfg.d_model)
         self.attn = CausalSelfAttention(cfg)
         self.mlp  = MLP(cfg)
-        self.drop_rate = drop_rate * (depth / cfg.n_layer)
+        # self.drop_rate = drop_rate * (depth / cfg.n_layer)
         self.residual_scale = math.sqrt(2 * depth)
         
     def forward(self, x):
@@ -325,7 +325,7 @@ class GPT(nn.Module):
         extra_args = dict(fused=True) if use_fused else dict()
         
         # Create AdamW optimizer
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas)
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
         return optimizer
 
     def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
