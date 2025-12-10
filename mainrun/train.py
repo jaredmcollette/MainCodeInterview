@@ -24,7 +24,7 @@ class Hyperparameters:
     lr: float = 1e-3
     pct_start: float = 0.2
     div_factor: float = 5.0
-    final_div_factor: float = 50.0
+    final_div_factor: float = 200.0
     weight_decay: float = 0.01
     evals_per_epoch: int = 3
     expansion_factor: float = 6
