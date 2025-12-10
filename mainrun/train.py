@@ -153,90 +153,71 @@ class GPTConfig:
     dropout: float
     expansion_factor: float
 
-class RotaryEmbedding(nn.Module):
-    def __init__(self, dim: int, max_position_embeddings: int = 2048, base: float = 500000.0, device=None):
-        super().__init__()
-        self.dim = dim
-        self.max_position_embeddings = max_position_embeddings
-        self.base = base
-        inv_freq = 1.0 / (self.base ** (torch.arange(0, dim, 2).float().to(device) / dim))
-        self.register_buffer("inv_freq", inv_freq)
-        self._set_cos_sin_cache(self.max_position_embeddings, device or inv_freq.device, dtype=torch.get_default_dtype())
+# ALiBi implementation
+def build_alibi_mask(n_head, max_len):
+    m = torch.arange(1, n_head + 1, dtype=torch.float32).repeat_interleave(max_len, 0)
+    m = m[:n_head * max_len].view(n_head, max_len)
+    m = m / torch.max(m)
+    i = torch.arange(max_len, dtype=torch.float32).unsqueeze(1)
+    j = torch.arange(max_len, dtype=torch.float32).unsqueeze(0)
+    alibi = i * m[:, None] - j.unsqueeze(0)
+    return -alibi  # L3-style linear bias (refined)
 
-    def _set_cos_sin_cache(self, seq_len: int, device: torch.device, dtype: torch.dtype):
-        self.max_seq_len_cached = seq_len
-        t = torch.arange(seq_len, device=device, dtype=self.inv_freq.dtype)
-        freqs = torch.einsum('i,j->ij', t, self.inv_freq)
-        emb = torch.cat((freqs, freqs), dim=-1).to(dtype)
-        self.register_buffer("cos_cached", emb.cos(), persistent=False)
-        self.register_buffer("sin_cached", emb.sin(), persistent=False)
-
-    def forward(self, x: torch.Tensor, seq_len: int = None):
-        if seq_len is None:
-            seq_len = x.shape[-2]
-        if seq_len > self.max_seq_len_cached:
-            self._set_cos_sin_cache(seq_len, x.device, x.dtype)
-        return (
-            self.cos_cached[:seq_len].to(x.device),
-            self.sin_cached[:seq_len].to(x.device),
-        )
-
-def rotate_half(x: torch.Tensor):
-    x1, x2 = x.chunk(2, dim=-1)
-    return torch.cat((-x2, x1), dim=-1)
-
-def apply_rotary_emb(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
-    q_rot = (q * cos) + (rotate_half(q) * sin)
-    k_rot = (k * cos) + (rotate_half(k) * sin)
-    return q_rot, k_rot
-
+# Grouped-Query Attention
 class CausalSelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
-        assert cfg.d_model % cfg.n_head == 0, 'd_model must be divisible by n_head'
+        assert cfg.d_model % cfg.n_head == 0
         self.head_dim = cfg.d_model // cfg.n_head
-        self.n_head = cfg.n_head
-        self.n_kv_heads = max(1, cfg.n_head // 2)  # e.g., 12//2=6
-        self.head_dim = cfg.d_model // cfg.n_head  # Redundant but safe
+        self.n_head   = cfg.n_head
+        self.n_kv_heads = max(1, cfg.n_head // 4)
 
-        self.causal_drop = nn.Dropout(cfg.dropout)
-        self.resid_drop = nn.Dropout(cfg.dropout)
+        # # Register ALiBi mask
+        self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
 
-        self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim, bias=False)
-        self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_kv_heads * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model, bias=False)
-        self.rotary_emb = RotaryEmbedding(self.head_dim, max_position_embeddings=cfg.block_size * 2)
+        self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
+        self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_kv_heads * self.head_dim)
+        self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model)
+
+        # # QK-Norm for stability
+        self.q_norm = RMSNorm(self.head_dim)
+        self.k_norm = RMSNorm(self.head_dim)
+
+        self.attn_drop = cfg.dropout
+        self.resid_drop= nn.Dropout(cfg.dropout)
 
     def forward(self, x: torch.Tensor):
-        B, T, C = x.shape
+        B, T, C = x.size()
 
-        # QKV projections
-        q = self.q_proj(x).view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+        # Project Q (all heads)
+        q = self.q_proj(x).view(B, T, self.n_head, self.head_dim).permute(0, 2, 1, 3)
 
-        kv = self.kv_proj(x).view(B, T, 2, self.n_kv_heads, self.head_dim)
-        kv = kv.permute(0, 2, 1, 3, 4)
-        k, v = kv.unbind(dim=1)
+        # Project K,V (fewer heads)
+        kv = self.kv_proj(x).view(B, T, 2, self.n_kv_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        k, v = kv.unbind(0)
+        
+        # Apply QK-Norm
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
-        # RoPE
-        cos, sin = self.rotary_emb(q, T)
-        q, k = apply_rotary_emb(q, k, cos, sin)
+        # Expand KV to match Q heads (GQA key operation)
+        k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
+        v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
 
-        # Repeat KV for GQA
-        repeat_factor = self.n_head // self.n_kv_heads
-        k = k.repeat_interleave(repeat_factor, dim=1)
-        v = v.repeat_interleave(repeat_factor, dim=1)
-
-        # Attention
+        # Attention scores
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
-        # Causal mask
-        causal_mask = torch.full((T, T), float('-inf'), device=x.device, dtype=att.dtype)
-        causal_mask = torch.triu(causal_mask, diagonal=1)
-        att = att + causal_mask.unsqueeze(0).unsqueeze(0)
+
+        # Add ALiBi bias
+        bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
+        att = att + bias
+        # Apply causal mask
+        mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
+        att = att.masked_fill(mask, float('-inf'))
+        # Softmax and attention
         att = F.softmax(att, dim=-1)
-        att = self.causal_drop(att)  # Drop on softmax
+        att = F.dropout(att, p=self.attn_drop if self.training else 0)
         y = att @ v
         y = y.transpose(1, 2).contiguous().view(B, T, C)
-
         return self.resid_drop(self.o_proj(y))
 
 # Originally from Llama
@@ -442,7 +423,7 @@ def main():
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
     
-    opt = model.configure_optimizers(args.weight_decay, args.lr, (0.9, 0.95), device)
+    opt = model.configure_optimizers(args.weight_decay, args.lr, (0.9, 0.999), device)
 
     warmup_steps = int(args.warmup_frac * max_steps)
     scheduler = CosineWarmupScheduler(opt, warmup_steps, max_steps, 1e-6)
