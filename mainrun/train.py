@@ -216,7 +216,7 @@ class SparseKSelfAttention(nn.Module):
         # Projections
         self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
         self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_kv_heads * self.head_dim)
-        self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model))
+        self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model)
         
         # QK-Norm for stability
         self.q_norm = RMSNorm(self.head_dim)
@@ -291,12 +291,12 @@ class SparseKSelfAttention(nn.Module):
         
         # ---- Full Attention Computation (only on selected tokens) ----
         # Create attention mask with only selected tokens
-        sparse_mask = torch.zeros_like(pre_att, dtype=torch.bool))
+        sparse_mask = torch.zeros_like(pre_att, dtype=torch.bool)
         
         # Mark top-K positions
         for b in range(B):
             for h in range(self.n_head):
-                sparse_mask[b, h].scatter_(1, topk_indices[b, h], True))
+                sparse_mask[b, h].scatter_(1, topk_indices[b, h], True)
         
         # Compute full attention on selected tokens
         att = torch.matmul(q, k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
@@ -307,7 +307,7 @@ class SparseKSelfAttention(nn.Module):
         
         # Apply sparse mask + causal mask
         combined_mask = self.causal_mask[:T, :T] | (~sparse_mask)
-        att = att.masked_fill(combined_mask, float('-inf')))
+        att = att.masked_fill(combined_mask, float('-inf'))
         
         # Apply softmax and dropout
         att = F.softmax(att, dim=-1)
@@ -322,8 +322,8 @@ class SparseKSelfAttention(nn.Module):
         y = torch.matmul(att, v)
         
         # Reshape and project
-        y = y.transpose(1, 2).contiguous().view(B, T, C))
-        y = self.resid_drop(self.o_proj(y)))
+        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        y = self.resid_drop(self.o_proj(y))
         
         return y
 
