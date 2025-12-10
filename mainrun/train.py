@@ -324,7 +324,7 @@ class GPT(nn.Module):
         # use_fused = fused_available and 'cuda' in device_type
         # extra_args = dict(fused=True) if use_fused else dict()
         
-        # Create AdamW optimizer
+        # Create Lion optimizer
         optimizer = Lion(optim_groups, lr=learning_rate, betas=betas)
         return optimizer
 
@@ -340,6 +340,22 @@ class GPT(nn.Module):
         else:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
         return logits, loss
+
+class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
+    def __init__(self, optimizer, warmup_steps, total_steps, min_lr=1e-6):
+        self.warmup_steps = warmup_steps
+        self.total_steps = total_steps
+        self.min_lr = min_lr
+        super().__init__(optimizer)
+
+    def get_lr(self):
+        progress = self.last_epoch / self.total_steps
+        if self.last_epoch < self.warmup_steps:
+            lr = self.base_lrs[0] * self.last_epoch / self.warmup_steps
+        else:
+            cos_decay = 0.5 * (1 + math.cos(math.pi * (progress - self.warmup_steps / self.total_steps) / (1 - self.warmup_steps / self.total_steps)))
+            lr = self.min_lr + (self.base_lrs[0] - self.min_lr) * cos_decay
+        return [lr for _ in self.optimizer.param_groups]
 
 def main():
     args = Hyperparameters()
@@ -392,16 +408,8 @@ def main():
     
     opt = model.configure_optimizers(args.weight_decay, args.lr, (0.9, 0.95), device)
 
-    # OneCycleLR scheduler
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer=opt,
-        max_lr=args.lr,
-        total_steps=max_steps,
-        pct_start=args.pct_start,              
-        anneal_strategy='cos',
-        div_factor=args.div_factor,             
-        final_div_factor=args.final_div_factor 
-    )
+    warmup_steps = int(0.1 * max_steps)
+    scheduler = CosineWarmupScheduler(opt, warmup_steps, max_steps, 1e-6)
 
     def evaluate():
         model.eval()
