@@ -161,24 +161,19 @@ def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
     dtype = torch.bfloat16
     device = torch.device('cpu')
 
-    # Geometric slopes (Llama/PaLM style, normalized)
     def get_slopes(nh: int):
-        if nh <= 0:
-            return torch.empty(0, dtype=dtype, device=device)
-        next_pow2 = 1 << (nh - 1).bit_length()
-        prev_pow2 = next_pow2 // 2
-        ratios = torch.tensor(2.0 ** (-8.0 / prev_pow2 * torch.arange(prev_pow2)), dtype=dtype, device=device)
-        if nh == next_pow2:
-            return ratios[::-1]  # Reverse: larger slopes for earlier heads
-        extra = torch.linspace(ratios[0], ratios[-1], nh - prev_pow2, dtype=dtype, device=device)
-        slopes = torch.cat([ratios[::-1], extra[::-1]], dim=0)
-        return slopes / slopes.max()  # Normalize max=1
+        if nh == 0:
+            return torch.empty((0,), dtype=dtype, device=device)
+        heads = torch.arange(nh, dtype=torch.float32, device=device)
+        log_factor = torch.tensor(-8.0 * math.log(2.0) / nh, dtype=torch.float32, device=device)
+        slopes = torch.exp(heads * log_factor).to(dtype)
+        return slopes.flip(0)  # Safe reverse, large→small slopes
 
     slopes = get_slopes(n_head)
     arange = torch.arange(max_len, dtype=dtype, device=device)
-    i_pos = arange[None, :, None]    # (1, L, 1)
-    j_pos = arange[None, None, :]    # (1, 1, L)
-    bias = slopes[:, None, None] * (j_pos - i_pos)  # (nh, L, L): negative for j < i
+    i_pos = arange[None, :, None]
+    j_pos = arange[None, None, :]
+    bias = slopes[:, None, None] * (j_pos - i_pos)
     return bias
 
 # Grouped-Query Attention
