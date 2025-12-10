@@ -182,61 +182,98 @@ class GPTConfig:
     dropout: float
     expansion_factor: float
 
+# Custom linear ALiBi
+def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
+    dtype = torch.float32
+    device = None
+
+    def get_slopes(nh: int):
+        if nh == 0:
+            return torch.empty((0,), dtype=dtype, device=device)
+        slopes = torch.arange(1, nh + 1, dtype=torch.float32, device=device) / nh
+        return slopes.to(dtype)
+
+    slopes = get_slopes(n_head)
+    arange = torch.arange(max_len, dtype=dtype, device=device)
+    i_pos = arange[None, :, None]
+    j_pos = arange[None, None, :]
+    bias = slopes[:, None, None] * (j_pos - i_pos)
+    return bias
+
+# Grouped-Query Attention
 class CausalSelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
-        self.n_head = cfg.n_head
+        assert cfg.d_model % cfg.n_head == 0
         self.head_dim = cfg.d_model // cfg.n_head
-        
-        self.qkv = nn.Linear(cfg.d_model, 3 * cfg.d_model, bias=False)
-        self.o_proj = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
-        
-        self.resid_drop = nn.Dropout(cfg.dropout)
-        
-        # Flash Attention support check happens inside F.scaled_dot_product_attention
+        self.n_head   = cfg.n_head
+        self.n_kv_heads = max(1, cfg.n_head // 4)
+
+        # Register ALiBi mask
+        self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
+
+        self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
+        self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_kv_heads * self.head_dim)
+        self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model)
+
+        # QK-Norm for stability
+        self.q_norm = RMSNorm(self.head_dim)
+        self.k_norm = RMSNorm(self.head_dim)
+
+        self.attn_drop = cfg.dropout
+        self.resid_drop= nn.Dropout(cfg.dropout)
 
     def forward(self, x: torch.Tensor):
         B, T, C = x.size()
-        # QKV projection
-        qkv = self.qkv(x).reshape(B, T, 3, self.n_head, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)
 
-        # Flash Attention (handles masking, softmax, dropout efficiently)
-        training = self.training
-        y = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0 if not training else 0.1, is_causal=True)
+        # Project Q (all heads)
+        q = self.q_proj(x).view(B, T, self.n_head, self.head_dim).permute(0, 2, 1, 3)
 
+        # Project K,V (fewer heads)
+        kv = self.kv_proj(x).view(B, T, 2, self.n_kv_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        k, v = kv.unbind(0)
+        
+        # Apply QK-Norm
+        # q = self.q_norm(q)
+        # k = self.k_norm(k)
+
+        # Expand KV to match Q heads (GQA key operation)
+        k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
+        v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
+
+        # Attention scores
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
+
+        # Add ALiBi bias
+        bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
+        att = att + bias
+        # Apply causal mask
+        mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
+        att = att.masked_fill(mask, float('-inf'))
+        # Softmax and attention
+        att = F.softmax(att, dim=-1)
+        att = F.dropout(att, p=self.attn_drop if self.training else 0)
+        y = att @ v
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         return self.resid_drop(self.o_proj(y))
-
-# Originally from Llama
-def get_hidden_dim(d_model: int, multiplier: float, multiple_of: int = 64) -> int:
-    """
-    Calculates the hidden dimension size.
-    It applies the multiplier and rounds up to the nearest multiple of 'multiple_of'
-    for hardware efficiency.
-    """
-    hidden_dim = int(d_model * multiplier)
-    hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
-    return hidden_dim
 
 # SwiGLU MLP Implementation
 class MLP(nn.Module):
     def __init__(self, cfg: GPTConfig, depth: int):
         super().__init__()
-        # In SwiGLU, we project to hidden_dim twice (gate and value), then project back.
-        hidden_dim = get_hidden_dim(cfg.d_model, cfg.expansion_factor, multiple_of=64)
+        hidden_dim = int(cfg.d_model * cfg.expansion_factor)
         
-        self.w1 = nn.Linear(cfg.d_model, hidden_dim, bias=False) # Gate
-        self.w2 = nn.Linear(cfg.d_model, hidden_dim, bias=False) # Value
-        self.c_proj = nn.Linear(hidden_dim, cfg.d_model, bias=False) # Output
+        self.gate_proj = nn.Linear(cfg.d_model, hidden_dim, bias=False)
+        self.up_proj = nn.Linear(cfg.d_model, hidden_dim, bias=False)
+        self.down_proj = nn.Linear(hidden_dim, cfg.d_model, bias=False)
         
         self.dropout = nn.Dropout(cfg.dropout)
         self.depth_scale = 1 / math.sqrt(depth)
 
     def forward(self, x):
-        # SwiGLU: (Swish(Gate) * Value) -> Output
-        x = F.silu(self.w1(x)) * self.w2(x)
-        x = self.c_proj(x) * self.depth_scale
+        # SwiGLU variant
+        x = F.silu(self.gate_proj(x)) * self.up_proj(x)
+        x = self.down_proj(x) * self.depth_scale
         x = self.dropout(x)
         return x
 
