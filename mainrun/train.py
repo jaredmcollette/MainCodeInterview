@@ -14,7 +14,7 @@ import structlog
 
 @dataclass
 class Hyperparameters:
-    block_size: int = 512
+    block_size: int = 256
     batch_size: int = 64
     vocab_size: int = 12_000
     n_layer: int = 4
@@ -251,31 +251,18 @@ class MLP(nn.Module):
         x = self.dropout(x)
         return x
 
-# Parallel Residual Block
 class Block(nn.Module):
-    def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.0):
+    def __init__(self, cfg: GPTConfig):
         super().__init__()
-        # Shared layer norm for both branches 
-        self.norm = RMSNorm(cfg.d_model)
+        self.attn_norm = RMSNorm(cfg.d_model)
+        self.ffn_norm = RMSNorm(cfg.d_model)
         self.attn = CausalSelfAttention(cfg)
-        self.mlp  = MLP(cfg)
-        # self.drop_rate = drop_rate * (depth / cfg.n_layer)
-        self.residual_scale = math.sqrt(2 * depth)
-        
+        self.ffn = MLP(cfg)  # Renamed for clarity
+
     def forward(self, x):
-        # Stochastic depth (disabled)
-        # if self.training and random.random() < self.drop_rate:
-        #     return x
-
-        residual = x
-        x_norm = self.norm(x)
-        # Single normalization shared by both branches
-        # Compute attention and MLP in parallel
-        attn_out = self.attn(x_norm)
-        mlp_out = self.mlp(x_norm)
-
-        parallel_out = (attn_out + mlp_out) / self.residual_scale
-        return residual + parallel_out
+        x = x + self.attn(self.attn_norm(x))
+        x = x + self.ffn(self.ffn_norm(x))
+        return x
 
 class GPT(nn.Module):
     def __init__(self, cfg: GPTConfig):
