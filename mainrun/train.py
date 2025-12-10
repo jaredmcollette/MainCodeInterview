@@ -242,8 +242,8 @@ class SparseKSelfAttention(nn.Module):
         
         # Causal mask buffer
         self.register_buffer("causal_mask", 
-            torch.triu(torch.ones(cfg.block_size, cfg.block_size, dtype=torch.bool), diagonal=1)
-        
+            torch.triu(torch.ones(cfg.block_size, cfg.block_size, dtype=torch.bool), diagonal=1))
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, C = x.size()
         
