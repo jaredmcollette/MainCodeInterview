@@ -365,7 +365,7 @@ class Block(nn.Module):
         self.norm = RMSNorm(cfg.d_model)
         self.attn = SparseKSelfAttention(cfg)
         self.mlp = MLP(cfg)
-        self.drop_rate = drop_rate * (depth / cfg.n_layer)
+        self.drop_rate = min(drop_rate * (depth / cfg.n_layer) * 1.5, 0.3)
         self.residual_scale = math.sqrt(2 * depth)
         
     def forward(self, x):
