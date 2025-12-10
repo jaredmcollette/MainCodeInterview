@@ -263,8 +263,8 @@ class Block(nn.Module):
         
     def forward(self, x):
         # Stochastic depth (disabled)
-        if self.training and random.random() < self.drop_rate:
-            return x
+        # if self.training and random.random() < self.drop_rate:
+        #     return x
 
         residual = x
         x_norm = self.norm(x)
@@ -384,7 +384,6 @@ def main():
     )
     model = GPT(cfg).to(device)
     if hasattr(torch, 'compile'):
-        logger.log("compile", message="Compiling model with torch.compile()")
         model = torch.compile(model, mode='max-autotune', fullgraph=True)
 
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
