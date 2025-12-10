@@ -315,7 +315,7 @@ class SparseKSelfAttention(nn.Module):
         
         # Incorporate gate scores to adapt attention weights
         gate_factor = gate_scores.unsqueeze(1).unsqueeze(-1)
-        att *= gate_factor.clamp_(min=0., max=1.)
+        att = att * gate_factor.clamp(min=0., max=1.)
         
         # Apply attention dropout
         att = F.dropout(att, p=self.attn_drop if self.training else 0)
