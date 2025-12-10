@@ -205,15 +205,15 @@ class CausalSelfAttention(nn.Module):
         k, v = kv.unbind(0)
         
         # Apply QK-Norm
-        # q = self.q_norm(q)
-        # k = self.k_norm(k)
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
         # Expand KV to match Q heads (GQA key operation)
         k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
         v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
 
         # Attention scores
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim)).to(att.dtype)
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
 
         # Add ALiBi bias
         bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
