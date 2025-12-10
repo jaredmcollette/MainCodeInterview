@@ -17,7 +17,7 @@ class Hyperparameters:
     block_size: int = 256
     batch_size: int = 64
     vocab_size: int = 12_000
-    n_layer: int = 4
+    n_layer: int = 8
     n_head: int = 8
     d_model: int = 512
     dropout: float = 0.1
@@ -28,7 +28,7 @@ class Hyperparameters:
     final_div_factor: float = 100.0
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
-    expansion_factor: float = 3.5
+    expansion_factor: float = 6
     
     epochs: int = 7
     seed: int = 1337
