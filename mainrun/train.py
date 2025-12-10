@@ -23,16 +23,11 @@ class Hyperparameters:
     dropout: float = 0.1
     lr: float = 1e-3
     pct_start: float = 0.2
-    div_factor: float = 2.5
-    final_div_factor: float = 200.0
-    weight_decay: float = 0.01
+    div_factor: float = 5.0
+    final_div_factor: float = 100.0
+    weight_decay: float = 0.1
     evals_per_epoch: int = 3
-    expansion_factor: float = 8
-
-    # SparseK specific parameters
-    sparse_k: int = 32  # Number of tokens to attend to
-    sparse_gate_temp: float = 0.3  # Temperature for gating
-    sparse_initial_k: int = 64  # Starting K value for adaptive mechanism
+    expansion_factor: float = 6
     
     epochs: int = 7
     seed: int = 1337
@@ -156,9 +151,6 @@ class GPTConfig:
     d_model: int
     dropout: float
     expansion_factor: float
-    sparse_k: int
-    sparse_gate_temp: float
-    sparse_initial_k: int
 
 # ALiBi implementation
 def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
@@ -169,90 +161,43 @@ def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
         slopes = torch.tensor([1.0])  # Single head case    
     # Create distance matrix    
     positions = torch.arange(max_len)
-    dist = positions[None, :] - positions[:, None]
+    dist = positions[:, None] - positions[None, :]
     # Create bias matrix
-    return -slopes.view(-1, 1, 1) * dist.view(1, max_len, max_len)
+    return -slopes.view(-1, 1, 1) * dist.abs().view(1, max_len, max_len)
 
-class AdaptiveSparseKGate(nn.Module):
-    """Learnable gating mechanism for adaptive K selection"""
-    def __init__(self, d_model: int, initial_k: int, gate_temp: float):
-        super().__init__()
-        self.gate_proj = nn.Linear(d_model, 1)
-        self.temperature = gate_temp
-        self.initial_k = initial_k
-        
-    def forward(self, x: torch.Tensor, training: bool = True) -> torch.Tensor:
-        # Compute gate scores
-        scores = self.gate_proj(x).squeeze(-1)  # [B, T]
-        
-        if training:
-            # Gumbel softmax for differentiable top-K selection
-            gumbel_noise = -torch.log(-torch.log(torch.rand_like(scores) + 1e-10))
-            noisy_scores = scores + gumbel_noise
-            gate = torch.sigmoid(noisy_scores / self.temperature)
-        else:
-            # Hard selection during inference
-            gate = (scores > 0).float()
-        
-        return gate
-
-"""
-SparseK Attention with adaptive token selection
-Combines the efficiency of sparse attention with full attention's expressiveness
-"""
-class SparseKSelfAttention(nn.Module):
+# Grouped-Query Attention
+class CausalSelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
         assert cfg.d_model % cfg.n_head == 0
         self.head_dim = cfg.d_model // cfg.n_head
-        self.n_head = cfg.n_head
+        self.n_head   = cfg.n_head
         self.n_kv_heads = max(1, cfg.n_head // 4)
-        self.sparse_k = cfg.sparse_k
-        self.temperature = cfg.sparse_gate_temp
-        
-        # Register ALiBi mask
+
+        # # Register ALiBi mask
         self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
-        
-        # Projections
+
         self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
         self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_kv_heads * self.head_dim)
         self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model)
-        
-        # QK-Norm for stability
+
+        # self.qkv = nn.Linear(cfg.d_model, 3 * cfg.d_model)
+        # self.proj = nn.Linear(cfg.d_model, cfg.d_model)
+
+        # # QK-Norm for stability
         self.q_norm = RMSNorm(self.head_dim)
         self.k_norm = RMSNorm(self.head_dim)
-        
-        # Adaptive gating mechanism
-        self.adaptive_gate = AdaptiveSparseKGate(
-            cfg.d_model, cfg.sparse_initial_k, cfg.sparse_gate_temp
-        )
-        
-        # Sparse selection parameters
-        self.selection_scale = nn.Parameter(torch.tensor(1.0))
-        
-        # Dropout
-        self.attn_drop = cfg.dropout
-        self.resid_drop = nn.Dropout(cfg.dropout)
-        
-        # Additional parameters for learned top-K
-        self.topk_router = nn.Sequential(
-            nn.Linear(cfg.d_model, cfg.n_head),
-            nn.Tanh()
-        )
-        
-        # Causal mask buffer
-        self.register_buffer("causal_mask", 
-            torch.triu(torch.ones(cfg.block_size, cfg.block_size, dtype=torch.bool), diagonal=1))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self.attn_drop = cfg.dropout
+        self.resid_drop= nn.Dropout(cfg.dropout)
+        # self.register_buffer("tril", torch.tril(torch.ones(cfg.block_size, cfg.block_size)))
+
+    def forward(self, x: torch.Tensor):
         B, T, C = x.size()
-        
-        # Compute adaptive gates
-        gate_scores = self.adaptive_gate(x, self.training)
-        
+
         # Project Q (all heads)
         q = self.q_proj(x).view(B, T, self.n_head, self.head_dim).permute(0, 2, 1, 3)
-        
+
         # Project K,V (fewer heads)
         kv = self.kv_proj(x).view(B, T, 2, self.n_kv_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         k, v = kv.unbind(0)
@@ -260,74 +205,26 @@ class SparseKSelfAttention(nn.Module):
         # Apply QK-Norm
         q = self.q_norm(q)
         k = self.k_norm(k)
-        
-        # Expand KV to match Q heads (GQA)
+
+        # Expand KV to match Q heads (GQA key operation)
         k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
         v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
-        
-        # ---- SparseK Selection Phase ----
-        # 1. Compute preliminary attention scores for token selection
-        with torch.no_grad():
-            # Use a simplified attention computation for selection
-            q_sel = q.detach()
-            k_sel = k.detach()
-            
-            # Preliminary dot product (cheaper computation)
-            pre_att = torch.matmul(q_sel, k_sel.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
-            
-            # Add ALiBi bias for selection
-            bias_sel = self.alibi_bias[:, :T, :T]
-            pre_att = pre_att + bias_sel
-            
-            # Apply causal mask
-            causal_mask_sel = self.causal_mask[:T, :T]
-            pre_att = pre_att.masked_fill(causal_mask_sel, float('-inf'))
-            
-            # Compute importance scores
-            # importance = torch.softmax(pre_att / self.temperature, dim=-1)
-            
-            # For each query, select top-K tokens
-            topk_values, topk_indices = torch.topk(pre_att, min(self.sparse_k, T), dim=-1)
-        
-        # ---- Full Attention Computation (only on selected tokens) ----
-        # Create attention mask with only selected tokens
-        sparse_mask = torch.zeros_like(pre_att, dtype=torch.bool)
-        
-        # Mark top-K positions
-        sparse_mask.scatter_(-1, topk_indices, True)
-        
-        router_scale = torch.softmax(self.topk_router(x.mean(dim=1)), dim=-1).unsqueeze(-1).unsqueeze(-1)
 
-        # Compute full attention on selected tokens
-        att = torch.matmul(q, k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
-        att = att * self.selection_scale
-        
+        # Attention scores
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
+
         # Add ALiBi bias
-        bias = self.alibi_bias[:, :T, :T]
-        att += bias * router_scale
-        
-        # Apply sparse mask + causal mask
-        combined_mask = self.causal_mask[:T, :T] | (~sparse_mask)
-        att = att.masked_fill(combined_mask, float('-inf'))
-        
-        # Apply softmax and dropout
+        bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
+        att = att + bias
+        # Apply causal mask
+        mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
+        att = att.masked_fill(mask, float('-inf'))
+        # Softmax and attention
         att = F.softmax(att, dim=-1)
-        
-        # Incorporate gate scores to adapt attention weights
-        gate_factor = gate_scores.unsqueeze(1).unsqueeze(-1)
-        att = att * gate_factor.clamp(min=0., max=1.)
-        
-        # Apply attention dropout
         att = F.dropout(att, p=self.attn_drop if self.training else 0)
-        
-        # Compute weighted values
-        y = torch.matmul(att, v)
-        
-        # Reshape and project
+        y = att @ v
         y = y.transpose(1, 2).contiguous().view(B, T, C)
-        y = self.resid_drop(self.o_proj(y))
-        
-        return y
+        return self.resid_drop(self.o_proj(y))
 
 # Originally from Llama
 def get_hidden_dim(d_model: int, multiplier: float, multiple_of: int = 64) -> int:
@@ -360,13 +257,14 @@ class MLP(nn.Module):
         x = self.dropout(x)
         return x
 
-# Block with SparseK Attention
+# Parallel Residual Block
 class Block(nn.Module):
     def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.1):
         super().__init__()
+        # Shared layer norm for both branches 
         self.norm = RMSNorm(cfg.d_model)
-        self.attn = SparseKSelfAttention(cfg)
-        self.mlp = MLP(cfg)
+        self.attn = CausalSelfAttention(cfg)
+        self.mlp  = MLP(cfg)
         self.drop_rate = drop_rate * (depth / cfg.n_layer)
         self.residual_scale = math.sqrt(2 * depth)
         
@@ -374,16 +272,26 @@ class Block(nn.Module):
         # Stochastic depth
         if self.training and random.random() < self.drop_rate:
             return x
-        
+
+        # Should be but the code below but the mistake version performs better. Investigate later.
         residual = x
         x_norm = self.norm(x)
-        
+        # Single normalization shared by both branches
         # Compute attention and MLP in parallel
         attn_out = self.attn(x_norm)
         mlp_out = self.mlp(x_norm)
-        
+
         parallel_out = (attn_out + mlp_out) / self.residual_scale
         return residual + parallel_out
+
+        # x = residual + self.attn(self.ln1(x)) / self.residual_scale
+        # residual = x
+        # x = residual + self.mlp(self.ln2(x)) / self.residual_scale
+        # # x = x + self.attn(self.ln1(x))
+        # # x = x + x / self.residual_scale
+        # # x = x + self.mlp(self.ln2(x))
+        # # x = x + x / self.residual_scale
+        # return x
 
 class GPT(nn.Module):
     def __init__(self, cfg: GPTConfig):
@@ -489,10 +397,7 @@ def main():
         n_head     = args.n_head,
         d_model    = args.d_model,
         dropout    = args.dropout,
-        expansion_factor = args.expansion_factor,
-        sparse_k   = args.sparse_k,
-        sparse_gate_temp = args.sparse_gate_temp,
-        sparse_initial_k = args.sparse_initial_k
+        expansion_factor = args.expansion_factor
     )
     model = GPT(cfg).to(device)
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
