@@ -242,7 +242,7 @@ def get_hidden_dim(d_model: int, multiplier: float, multiple_of: int = 64) -> in
 
 # SwiGLU MLP Implementation
 class MLP(nn.Module):
-    def __init__(self, cfg: GPTConfig):
+    def __init__(self, cfg: GPTConfig, depth: int):
         super().__init__()
         # In SwiGLU, we project to hidden_dim twice (gate and value), then project back.
         hidden_dim = get_hidden_dim(cfg.d_model, cfg.expansion_factor, multiple_of=64)
@@ -252,11 +252,12 @@ class MLP(nn.Module):
         self.c_proj = nn.Linear(hidden_dim, cfg.d_model, bias=False) # Output
         
         self.dropout = nn.Dropout(cfg.dropout)
+        self.depth_scale = 1 / math.sqrt(depth)
 
     def forward(self, x):
         # SwiGLU: (Swish(Gate) * Value) -> Output
         x = F.silu(self.w1(x)) * self.w2(x)
-        x = self.c_proj(x)
+        x = self.c_proj(x) * self.depth_scale
         x = self.dropout(x)
         return x
 
@@ -266,7 +267,7 @@ class Block(nn.Module):
         self.attn_norm = RMSNorm(cfg.d_model)
         self.ffn_norm = RMSNorm(cfg.d_model)
         self.attn = CausalSelfAttention(cfg)
-        self.ffn = MLP(cfg)
+        self.ffn = MLP(cfg, depth)
 
     def forward(self, x):
         x = x + self.attn(self.attn_norm(x))
