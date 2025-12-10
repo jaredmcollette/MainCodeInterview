@@ -22,7 +22,7 @@ class Hyperparameters:
     d_model: int = 512
     dropout: float = 0.1
     lr: float = 1e-3
-    pct_start: float = 0.2
+    pct_start: float = 0.3
     div_factor: float = 5.0
     final_div_factor: float = 100.0
     weight_decay: float = 0.01
@@ -360,12 +360,12 @@ class MLP(nn.Module):
 
 # Block with SparseK Attention
 class Block(nn.Module):
-    def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.2):
+    def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.1):
         super().__init__()
         self.norm = RMSNorm(cfg.d_model)
         self.attn = SparseKSelfAttention(cfg)
         self.mlp = MLP(cfg)
-        self.drop_rate = min(drop_rate * (depth / cfg.n_layer) * 1.5, 0.3)
+        self.drop_rate = drop_rate * (depth / cfg.n_layer)
         self.residual_scale = math.sqrt(2 * depth)
         
     def forward(self, x):
