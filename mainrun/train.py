@@ -28,7 +28,7 @@ class Hyperparameters:
     final_div_factor: float = 100.0
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
-    expansion_factor: float = 6
+    expansion_factor: float = 3.5
     
     epochs: int = 7
     seed: int = 1337
