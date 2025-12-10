@@ -312,7 +312,6 @@ class GPT(nn.Module):
 
         self.head.weight = self.token_emb.weight
 
-    @staticmethod
     def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
             nn.init.normal_(module.weight, mean=0.0, std=0.02 / math.sqrt(2 * module.weight.shape[-1] // self.d_model))
