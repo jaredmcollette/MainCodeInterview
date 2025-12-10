@@ -281,7 +281,7 @@ class SparseKSelfAttention(nn.Module):
             
             # Apply causal mask
             causal_mask_sel = self.causal_mask[:T, :T]
-            pre_att = pre_att.masked_fill(causal_mask_sel, float('-inf')))
+            pre_att = pre_att.masked_fill(causal_mask_sel, float('-inf'))
             
             # Compute importance scores
             importance = torch.softmax(pre_att / self.temperature, dim=-1)
