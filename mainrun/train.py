@@ -153,7 +153,7 @@ class GPTConfig:
     dropout: float
     expansion_factor: float
 
-
+# Custom linear ALiBi
 def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
     dtype = torch.float32
     device = None
@@ -213,7 +213,7 @@ class CausalSelfAttention(nn.Module):
         v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
 
         # Attention scores
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim)).to(att.dtype)
 
         # Add ALiBi bias
         bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
