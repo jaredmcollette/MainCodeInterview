@@ -22,6 +22,7 @@ class Hyperparameters:
     d_model: int = 512
     dropout: float = 0.1
     lr: float = 1e-3
+    warmup_frac: float = 0.2
     pct_start: float = 0.2
     div_factor: float = 5.0
     final_div_factor: float = 100.0
@@ -323,7 +324,7 @@ class GPT(nn.Module):
         use_fused = fused_available and 'cuda' in device_type
         extra_args = dict(fused=True) if use_fused else dict()
         
-        # Create Lion optimizer
+        # Create AdamW optimizer
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas)
         return optimizer
 
@@ -407,7 +408,7 @@ def main():
     
     opt = model.configure_optimizers(args.weight_decay, args.lr, (0.9, 0.95), device)
 
-    warmup_steps = int(0.1 * max_steps)
+    warmup_steps = int(args.warmup_frac * max_steps)
     scheduler = CosineWarmupScheduler(opt, warmup_steps, max_steps, 1e-6)
 
     def evaluate():
