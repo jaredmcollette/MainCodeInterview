@@ -32,7 +32,7 @@ class Hyperparameters:
     # SparseK specific parameters
     sparse_k: int = 16  # Number of tokens to attend to
     sparse_gate_temp: float = 0.3  # Temperature for gating
-    sparse_initial_k: int = 64  # Starting K value for adaptive mechanism
+    sparse_initial_k: int = 32  # Starting K value for adaptive mechanism
     
     epochs: int = 7
     seed: int = 1337
