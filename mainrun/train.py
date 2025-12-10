@@ -181,14 +181,14 @@ class CausalSelfAttention(nn.Module):
         self.n_head   = cfg.n_head
         self.n_kv_heads = max(1, cfg.n_head // 4)
 
-        # # Register ALiBi mask
+        # Register ALiBi mask
         self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
 
         self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
         self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_kv_heads * self.head_dim)
         self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model)
 
-        # # QK-Norm for stability
+        # QK-Norm for stability
         self.q_norm = RMSNorm(self.head_dim)
         self.k_norm = RMSNorm(self.head_dim)
 
@@ -312,6 +312,7 @@ class GPT(nn.Module):
         self.head      = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
 
         self.apply(self._init_weights)
+        self.gradient_checkpointing = True
 
         # Depth-scaled init for output layers
         for block in self.blocks:
@@ -358,7 +359,20 @@ class GPT(nn.Module):
         B, T = idx.size()
         tok = self.token_emb(idx)
         x = self.drop(tok)
-        for block in self.blocks: x = block(x)
+        if self.gradient_checkpointing:
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs)
+                return custom_forward
+
+            for block in self.blocks:
+                x = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(block),
+                    x,
+                    use_reentrant=False
+                )
+        else:
+            for block in self.blocks: x = block(x)
         x = self.ln_f(x)
         logits = self.head(x)
         if targets is None:
