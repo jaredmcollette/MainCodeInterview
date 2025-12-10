@@ -384,7 +384,7 @@ def main():
     )
     model = GPT(cfg).to(device)
     if hasattr(torch, 'compile'):
-        model = torch.compile(model, mode='max-autotune', fullgraph=True)
+        model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
 
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
