@@ -309,11 +309,10 @@ class MoELayer(nn.Module):
                 # Mask: which tokens chose expert 'i' for rank 'k'?
                 mask = (expert_idx == i)
                 
-                if mask.any():
-                    inp = flat_x[mask]
-                    out = expert(inp)
-                    # Add weighted output to final result
-                    final_output[mask] += weight[mask] * out
+                # if mask.any():
+                inp = flat_x[mask]
+                out = expert(inp)
+                final_output[mask] += weight[mask] * out
                     
         return final_output.view(B, T, C)
 
@@ -500,11 +499,13 @@ def main():
 
     )
     model = GPT(cfg).to(device)
-    # if hasattr(torch, 'compile'):
-    #     try:
-    #         model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
-    #     except:
-    #         pass
+    if hasattr(torch, 'compile'):
+        try:
+            model = torch.compile(model)
+            logger.log("model_compiled", mode="default")
+        except:
+            logger.log("compilation_failed", error=str(e))
+            pass
 
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
