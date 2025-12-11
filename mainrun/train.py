@@ -21,7 +21,7 @@ class Hyperparameters:
     n_head: int = 6
     d_model: int = 510
     dropout: float = 0.1
-    lr: float = 6e-4
+    lr: float = 1e-3
     warmup_frac: float = 0.1
     pct_start: float = 0.2
     div_factor: float = 5.0
@@ -238,12 +238,12 @@ class CausalSelfAttention(nn.Module):
         self.n_head   = cfg.n_head
 
         # Precompute RoPE cos/sin table
-        cos, sin = get_rotary_sin_cos(self.head_dim, cfg.block_size, device=None)
-        self.register_buffer("cos", cos, persistent=False)
-        self.register_buffer("sin", sin, persistent=False)
+        # cos, sin = get_rotary_sin_cos(self.head_dim, cfg.block_size, device=None)
+        # self.register_buffer("cos", cos, persistent=False)
+        # self.register_buffer("sin", sin, persistent=False)
 
         # Register ALiBi mask
-        # self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
+        self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
 
         self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
         self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_head * self.head_dim)
@@ -262,18 +262,18 @@ class CausalSelfAttention(nn.Module):
         kv = self.kv_proj(x).view(B, T, 2, self.n_head, self.head_dim).permute(2, 0, 3, 1, 4)
         k, v = kv.unbind(0)
 
-        q, k = apply_rope(q, k, self.cos, self.sin)
+        # q, k = apply_rope(q, k, self.cos, self.sin)
 
         # Expand KV to match Q heads (GQA key operation)
-        # k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
-        # v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
+        k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
+        v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
 
         # Attention scores
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
 
         # Add ALiBi bias
-        # bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
-        # att = att + bias
+        bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
+        att = att + bias
 
         # Apply causal mask
         mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
