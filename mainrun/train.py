@@ -21,7 +21,7 @@ class Hyperparameters:
     n_head: int = 6
     d_model: int = 510
     dropout: float = 0.1
-    lr: float = 1e-3
+    lr: float = 8e-4
     warmup_frac: float = 0.1
     pct_start: float = 0.2
     div_factor: float = 5.0
@@ -280,7 +280,7 @@ class MoELayer(nn.Module):
         # The router decides which experts get which tokens
         self.router = nn.Linear(cfg.d_model, self.num_experts, bias=False)
         
-        # Create 'num_experts' instances of your SwiGLU layer
+        # Create 'num_experts' instances of the SwiGLU layer
         self.experts = nn.ModuleList([MLP(cfg, depth) for _ in range(self.num_experts)])
 
         self.noise_std = 0.1  # Amount of noise to add
