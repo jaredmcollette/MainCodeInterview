@@ -243,6 +243,7 @@ class CausalSelfAttention(nn.Module):
         # self.register_buffer("sin", sin, persistent=False)
 
         # Register ALiBi mask
+        self.n_kv_heads = max(1, cfg.n_head // 4)
         self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
 
         self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
