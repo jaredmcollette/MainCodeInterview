@@ -500,11 +500,11 @@ def main():
 
     )
     model = GPT(cfg).to(device)
-    if hasattr(torch, 'compile'):
-        try:
-            model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
-        except:
-            pass
+    # if hasattr(torch, 'compile'):
+    #     try:
+    #         model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
+    #     except:
+    #         pass
 
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
