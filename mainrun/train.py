@@ -31,7 +31,7 @@ class Hyperparameters:
     expansion_factor: float = 6
 
     # MoE Specifics
-    num_experts: int = 8
+    num_experts: int = 4
     top_k: int = 2
     
     epochs: int = 7
