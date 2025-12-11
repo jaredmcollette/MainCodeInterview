@@ -19,9 +19,9 @@ class Hyperparameters:
     vocab_size: int = 12_000
     n_layer: int = 4
     n_head: int = 6
-    d_model: int = 384
+    d_model: int = 510
     dropout: float = 0.1
-    lr: float = 1e-3
+    lr: float = 6e-4
     warmup_frac: float = 0.1
     pct_start: float = 0.2
     div_factor: float = 5.0
@@ -188,6 +188,24 @@ class GPTConfig:
     num_experts: int
     top_k: int
 
+# Custom linear ALiBi
+def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
+    dtype = torch.float32
+    device = None
+
+    def get_slopes(nh: int):
+        if nh == 0:
+            return torch.empty((0,), dtype=dtype, device=device)
+        slopes = torch.arange(1, nh + 1, dtype=torch.float32, device=device) / nh
+        return slopes.to(dtype)
+
+    slopes = get_slopes(n_head)
+    arange = torch.arange(max_len, dtype=dtype, device=device)
+    i_pos = arange[None, :, None]
+    j_pos = arange[None, None, :]
+    bias = slopes[:, None, None] * (j_pos - i_pos)
+    return bias
+
 def get_rotary_sin_cos(head_dim, max_seq_len, device):
     inv_freq = 1.0 / (10000 ** (torch.arange(0, head_dim, 2, device=device).float() / head_dim))
     t = torch.arange(max_seq_len, device=device, dtype=inv_freq.dtype)
@@ -224,6 +242,9 @@ class CausalSelfAttention(nn.Module):
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
 
+        # Register ALiBi mask
+        # self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
+
         self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
         self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_head * self.head_dim)
         self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model)
@@ -243,8 +264,16 @@ class CausalSelfAttention(nn.Module):
 
         q, k = apply_rope(q, k, self.cos, self.sin)
 
+        # Expand KV to match Q heads (GQA key operation)
+        # k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
+        # v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
+
         # Attention scores
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
+
+        # Add ALiBi bias
+        # bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
+        # att = att + bias
 
         # Apply causal mask
         mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
