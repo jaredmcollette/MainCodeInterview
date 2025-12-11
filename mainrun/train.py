@@ -283,12 +283,20 @@ class MoELayer(nn.Module):
         # Create 'num_experts' instances of your SwiGLU layer
         self.experts = nn.ModuleList([MLP(cfg, depth) for _ in range(self.num_experts)])
 
+        self.noise_std = 0.1  # Amount of noise to add
+
     def forward(self, x):
         B, T, C = x.shape
         flat_x = x.view(-1, C)
         
         # 1. Router logits
         router_logits = self.router(flat_x)
+
+        if self.training:
+            # Add random noise to logits to force exploration
+            noise = torch.randn_like(router_logits) * self.noise_std
+            # Multiply logits by a small factor to ensure noise has effect
+            router_logits = router_logits + noise
         
         # 2. Select Top-K
         # routing_weights: (B*T, top_k)
