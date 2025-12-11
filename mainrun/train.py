@@ -29,6 +29,10 @@ class Hyperparameters:
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
     expansion_factor: float = 6
+
+    # MoE Specifics
+    num_experts: int = 8
+    top_k: int = 2
     
     epochs: int = 7
     seed: int = 1337
@@ -181,6 +185,8 @@ class GPTConfig:
     d_model: int
     dropout: float
     expansion_factor: float
+    num_experts: int
+    top_k: int
 
 # Custom linear ALiBi
 def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
@@ -200,14 +206,13 @@ def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
     bias = slopes[:, None, None] * (j_pos - i_pos)
     return bias
 
-# Grouped-Query Attention
+# Causal Self-Attention with ALiBi
 class CausalSelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
         assert cfg.d_model % cfg.n_head == 0
         self.head_dim = cfg.d_model // cfg.n_head
         self.n_head   = cfg.n_head
-        # self.n_kv_heads = max(1, cfg.n_head // 4)
 
         # Register ALiBi mask
         self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
@@ -215,10 +220,6 @@ class CausalSelfAttention(nn.Module):
         self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
         self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_head * self.head_dim)
         self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model)
-
-        # QK-Norm for stability
-        self.q_norm = RMSNorm(self.head_dim)
-        self.k_norm = RMSNorm(self.head_dim)
 
         self.attn_drop = cfg.dropout
         self.resid_drop= nn.Dropout(cfg.dropout)
@@ -232,14 +233,6 @@ class CausalSelfAttention(nn.Module):
         # Project K,V (fewer heads)
         kv = self.kv_proj(x).view(B, T, 2, self.n_head, self.head_dim).permute(2, 0, 3, 1, 4)
         k, v = kv.unbind(0)
-        
-        # Apply QK-Norm
-        # q = self.q_norm(q)
-        # k = self.k_norm(k)
-
-        # Expand KV to match Q heads (GQA key operation)
-        # k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
-        # v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
 
         # Attention scores
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
@@ -277,13 +270,60 @@ class MLP(nn.Module):
         x = self.dropout(x)
         return x
 
+# 2. MoE Router
+class MoELayer(nn.Module):
+    def __init__(self, cfg: GPTConfig, depth: int):
+        super().__init__()
+        self.num_experts = cfg.num_experts
+        self.top_k = cfg.top_k
+        
+        # The router decides which experts get which tokens
+        self.router = nn.Linear(cfg.d_model, self.num_experts, bias=False)
+        
+        # Create 'num_experts' instances of your SwiGLU layer
+        self.experts = nn.ModuleList([MLP(cfg, depth) for _ in range(self.num_experts)])
+
+    def forward(self, x):
+        B, T, C = x.shape
+        flat_x = x.view(-1, C)
+        
+        # 1. Router logits
+        router_logits = self.router(flat_x)
+        
+        # 2. Select Top-K
+        # routing_weights: (B*T, top_k)
+        # selected_experts: (B*T, top_k) indices
+        routing_weights, selected_experts = torch.topk(router_logits, self.top_k, dim=-1)
+        routing_weights = F.softmax(routing_weights, dim=-1, dtype=torch.float).to(x.dtype)
+        
+        final_output = torch.zeros_like(flat_x)
+        
+        # 3. Process Experts
+        # Loop through each rank (1st choice, 2nd choice...)
+        for k in range(self.top_k):
+            expert_idx = selected_experts[:, k]
+            weight = routing_weights[:, k].unsqueeze(-1)
+            
+            # Iterate over all available experts
+            for i, expert in enumerate(self.experts):
+                # Mask: which tokens chose expert 'i' for rank 'k'?
+                mask = (expert_idx == i)
+                
+                if mask.any():
+                    inp = flat_x[mask]
+                    out = expert(inp)
+                    # Add weighted output to final result
+                    final_output[mask] += weight[mask] * out
+                    
+        return final_output.view(B, T, C)
+
 class Block(nn.Module):
     def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.0):
         super().__init__()
         self.attn_norm = RMSNorm(cfg.d_model)
         self.ffn_norm = RMSNorm(cfg.d_model)
         self.attn = CausalSelfAttention(cfg)
-        self.ffn = MLP(cfg, depth)
+        self.ffn = MoELayer(cfg, depth)
 
     def forward(self, x):
         x = x + self.attn(self.attn_norm(x))
@@ -453,7 +493,10 @@ def main():
         n_head     = args.n_head,
         d_model    = args.d_model,
         dropout    = args.dropout,
-        expansion_factor = args.expansion_factor
+        expansion_factor = args.expansion_factor,
+        num_experts = args.num_experts,
+        top_k = args.top_k
+
     )
     model = GPT(cfg).to(device)
     if hasattr(torch, 'compile'):
