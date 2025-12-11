@@ -207,13 +207,13 @@ class CausalSelfAttention(nn.Module):
         assert cfg.d_model % cfg.n_head == 0
         self.head_dim = cfg.d_model // cfg.n_head
         self.n_head   = cfg.n_head
-        self.n_kv_heads = max(1, cfg.n_head // 4)
+        # self.n_kv_heads = max(1, cfg.n_head // 4)
 
         # Register ALiBi mask
         self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
 
         self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
-        self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_kv_heads * self.head_dim)
+        self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_head * self.head_dim)
         self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model)
 
         # QK-Norm for stability
@@ -230,7 +230,7 @@ class CausalSelfAttention(nn.Module):
         q = self.q_proj(x).view(B, T, self.n_head, self.head_dim).permute(0, 2, 1, 3)
 
         # Project K,V (fewer heads)
-        kv = self.kv_proj(x).view(B, T, 2, self.n_kv_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        kv = self.kv_proj(x).view(B, T, 2, self.n_head, self.head_dim).permute(2, 0, 3, 1, 4)
         k, v = kv.unbind(0)
         
         # Apply QK-Norm
@@ -238,8 +238,8 @@ class CausalSelfAttention(nn.Module):
         # k = self.k_norm(k)
 
         # Expand KV to match Q heads (GQA key operation)
-        k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
-        v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
+        # k = k.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
+        # v = v.repeat_interleave(self.n_head // self.n_kv_heads, dim=1)
 
         # Attention scores
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
