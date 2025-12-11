@@ -17,9 +17,9 @@ class Hyperparameters:
     block_size: int = 256
     batch_size: int = 64
     vocab_size: int = 12_000
-    n_layer: int = 4
+    n_layer: int = 8
     n_head: int = 6
-    d_model: int = 510
+    d_model: int = 504
     dropout: float = 0.1
     lr: float = 1e-3
     warmup_frac: float = 0.1
@@ -188,25 +188,30 @@ class GPTConfig:
     num_experts: int
     top_k: int
 
-# Custom linear ALiBi
-def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
-    dtype = torch.float32
-    device = None
+def get_rotary_sin_cos(head_dim, max_seq_len, device):
+    inv_freq = 1.0 / (10000 ** (torch.arange(0, head_dim, 2, device=device).float() / head_dim))
+    t = torch.arange(max_seq_len, device=device, dtype=inv_freq.dtype)
+    freqs = torch.outer(t, inv_freq)
+    # Polar coordinates trick: concating freqs twice
+    emb = torch.cat((freqs, freqs), dim=-1)
+    return emb.cos(), emb.sin()
 
-    def get_slopes(nh: int):
-        if nh == 0:
-            return torch.empty((0,), dtype=dtype, device=device)
-        slopes = torch.arange(1, nh + 1, dtype=torch.float32, device=device) / nh
-        return slopes.to(dtype)
+def apply_rope(q, k, cos, sin):
+    # Rotate half helper
+    def rotate_half(x):
+        x1 = x[..., :x.shape[-1]//2]
+        x2 = x[..., x.shape[-1]//2:]
+        return torch.cat((-x2, x1), dim=-1)
 
-    slopes = get_slopes(n_head)
-    arange = torch.arange(max_len, dtype=dtype, device=device)
-    i_pos = arange[None, :, None]
-    j_pos = arange[None, None, :]
-    bias = slopes[:, None, None] * (j_pos - i_pos)
-    return bias
+    # Slice cos/sin to the sequence length of q
+    T = q.shape[2]
+    cos = cos[:T, :].unsqueeze(0).unsqueeze(0)
+    sin = sin[:T, :].unsqueeze(0).unsqueeze(0)
 
-# Causal Self-Attention with ALiBi
+    q_rot = (q * cos) + (rotate_half(q) * sin)
+    k_rot = (k * cos) + (rotate_half(k) * sin)
+    return q_rot, k_rot
+
 class CausalSelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
@@ -214,8 +219,10 @@ class CausalSelfAttention(nn.Module):
         self.head_dim = cfg.d_model // cfg.n_head
         self.n_head   = cfg.n_head
 
-        # Register ALiBi mask
-        self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
+        # Precompute RoPE cos/sin table
+        cos, sin = get_rotary_sin_cos(self.head_dim, cfg.block_size, device=None)
+        self.register_buffer("cos", cos, persistent=False)
+        self.register_buffer("sin", sin, persistent=False)
 
         self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
         self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_head * self.head_dim)
@@ -234,12 +241,11 @@ class CausalSelfAttention(nn.Module):
         kv = self.kv_proj(x).view(B, T, 2, self.n_head, self.head_dim).permute(2, 0, 3, 1, 4)
         k, v = kv.unbind(0)
 
+        q, k = apply_rope(q, k, self.cos, self.sin)
+
         # Attention scores
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
 
-        # Add ALiBi bias
-        bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
-        att = att + bias
         # Apply causal mask
         mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
         att = att.masked_fill(mask, float('-inf'))
