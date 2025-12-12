@@ -239,7 +239,7 @@ class GPTConfig:
     top_k: int
     pos_emb_type: PositionalEmbeddingType
 
-def get_slopes(nh: int, device: torch.device = None):
+def get_slopes(nh: int, device: torch.device = None, dtype: torch.dtype = torch.float32) -> torch.Tensor:
         """Generates a unique slope (penalty factor) for each attention head."""
         if nh == 0:
             return torch.empty((0,), dtype=dtype, device=device)
@@ -268,7 +268,7 @@ def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
     dtype = torch.float32
     device = None # Created on CPU first to save GPU memory during initialization
 
-    slopes = get_slopes(n_head, device)
+    slopes = get_slopes(n_head, device, dtype)
     
     # Create the distance matrix via broadcasting
     arange = torch.arange(max_len, dtype=dtype, device=device)
