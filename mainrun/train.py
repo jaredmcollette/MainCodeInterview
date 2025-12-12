@@ -250,6 +250,9 @@ class CausalSelfAttention(nn.Module):
         self.attn_drop = cfg.dropout
         self.resid_drop= nn.Dropout(cfg.dropout)
 
+        self.q_norm = RMSNorm(self.head_dim)
+        self.k_norm = RMSNorm(self.head_dim)
+
     def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor):
         B, T, C = x.size()
 
@@ -259,6 +262,9 @@ class CausalSelfAttention(nn.Module):
         # Project K,V (fewer heads)
         kv = self.kv_proj(x).view(B, T, 2, self.n_head, self.head_dim).permute(2, 0, 3, 1, 4)
         k, v = kv.unbind(0)
+
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
         if self.pos_emb_type == PositionalEmbeddingType.ROPE:
             q, k = apply_rotary_emb(q, k, freqs_cis)
