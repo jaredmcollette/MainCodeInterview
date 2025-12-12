@@ -220,7 +220,7 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
     return freqs_cis
 
-def apply_rotary_emb(q, k, freqs_cis):
+def apply_rotary_emb(xq, xk, freqs_cis):
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
     freqs_cis = freqs_cis[:xq.shape[1]].to(xq_.device)
