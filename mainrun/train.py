@@ -549,8 +549,8 @@ def main():
             step += 1
 
             # Wrap the forward pass
-            with torch.amp.autocast('cuda'):
-                _, loss = model(xb, yb)
+            # with torch.amp.autocast('cuda'):
+            _, loss = model(xb, yb)
 
             opt.zero_grad(set_to_none=True)
             loss.backward()
