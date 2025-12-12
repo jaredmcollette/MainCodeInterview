@@ -19,7 +19,7 @@ class PositionalEmbeddingType(str, Enum):
 
 @dataclass
 class Hyperparameters:
-    block_size: int = 128
+    block_size: int = 256
     batch_size: int = 64
     vocab_size: int = 12_000
     n_layer: int = 6
@@ -27,6 +27,7 @@ class Hyperparameters:
     d_model: int = 504
     dropout: float = 0.1
     lr: float = 1e-3
+    min_lr: float = 1e-6
     warmup_frac: float = 0.1
     pct_start: float = 0.2
     div_factor: float = 5.0
@@ -35,6 +36,7 @@ class Hyperparameters:
     evals_per_epoch: int = 3
     expansion_factor: float = 6
     pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ALIBI
+    betas: = (0.9, 0.999)
 
     # MoE Specifics
     num_experts: int = 4
@@ -522,10 +524,10 @@ def main():
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
     
-    opt = model.configure_optimizers(args.weight_decay, args.lr, (0.9, 0.999), device)
+    opt = model.configure_optimizers(args.weight_decay, args.lr, args.betas, device)
 
     warmup_steps = int(args.warmup_frac * max_steps)
-    scheduler = CosineWarmupScheduler(opt, warmup_steps, max_steps, 1e-6)
+    scheduler = CosineWarmupScheduler(opt, warmup_steps, max_steps, args.min_lr)
 
     def evaluate():
         model.eval()
@@ -545,7 +547,11 @@ def main():
     for epoch in range(1, args.epochs + 1):
         for xb, yb in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}"):
             step += 1
-            _, loss = model(xb, yb)
+
+            # Wrap the forward pass
+            with torch.amp.autocast('cuda'):
+                _, loss = model(xb, yb)
+
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
