@@ -34,7 +34,7 @@ class Hyperparameters:
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
     expansion_factor: float = 6
-    pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ROPE
+    pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ALIBI
 
     # MoE Specifics
     num_experts: int = 4
@@ -477,7 +477,7 @@ def main():
 
     train_titles, val_titles = get_titles(args.num_titles, args.seed, args.val_frac)
     
-    eos_token = "<|endoftext|>"
+    eos_token = "<eoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseoseos>"
     tok = BPETokenizer(train_tokenizer(train_titles, args.vocab_size, eos_token=eos_token))
     train_text = eos_token.join(train_titles) + eos_token
     val_text = eos_token.join(val_titles) + eos_token
