@@ -3,6 +3,7 @@ import math, random, time
 from dataclasses import dataclass
 import json
 from pathlib import Path
+from enum import Enum
 
 import torch
 import torch.nn as nn
@@ -11,6 +12,10 @@ from datasets import load_dataset
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders
 from tqdm import tqdm
 import structlog
+
+class PositionalEmbeddingType(str, Enum):
+    ROPE = "rope"
+    ALIBI = "alibi"
 
 @dataclass
 class Hyperparameters:
@@ -29,6 +34,7 @@ class Hyperparameters:
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
     expansion_factor: float = 6
+    pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ALIBI
 
     # MoE Specifics
     num_experts: int = 4
@@ -187,6 +193,7 @@ class GPTConfig:
     expansion_factor: float
     num_experts: int
     top_k: int
+    pos_emb_type: PositionalEmbeddingType
 
 # Custom linear ALiBi
 def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
@@ -237,13 +244,17 @@ class CausalSelfAttention(nn.Module):
         self.head_dim = cfg.d_model // cfg.n_head
         self.n_head   = cfg.n_head
 
-        # Precompute RoPE cos/sin table
-        # cos, sin = get_rotary_sin_cos(self.head_dim, cfg.block_size, device=None)
-        # self.register_buffer("cos", cos, persistent=False)
-        # self.register_buffer("sin", sin, persistent=False)
+        match self.pos_type:
+            case PositionalEmbeddingType.ROPE:
+                # Precompute RoPE cos/sin table
+                cos, sin = get_rotary_sin_cos(self.head_dim, cfg.block_size, device=None)
+                self.register_buffer("cos", cos, persistent=False)
+                self.register_buffer("sin", sin, persistent=False)
+            
+            case PositionalEmbeddingType.ALIBI:
+                # Register ALiBi mask
+                self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
 
-        # Register ALiBi mask
-        self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
 
         self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
         self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_head * self.head_dim)
@@ -262,14 +273,16 @@ class CausalSelfAttention(nn.Module):
         kv = self.kv_proj(x).view(B, T, 2, self.n_head, self.head_dim).permute(2, 0, 3, 1, 4)
         k, v = kv.unbind(0)
 
-        # q, k = apply_rope(q, k, self.cos, self.sin)
+        if self.pos_type == PositionalEmbeddingType.ROPE:
+            q, k = apply_rope(q, k, self.cos, self.sin)
 
         # Attention scores
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
 
         # Add ALiBi bias
-        bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
-        att = att + bias
+        if self.pos_type == PositionalEmbeddingType.ALIBI:
+            bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
+            att = att + bias
 
         # Apply causal mask
         mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
@@ -407,7 +420,6 @@ class GPT(nn.Module):
         self.head      = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
 
         self.apply(self._init_weights)
-        # self.gradient_checkpointing = True
 
         # Depth-scaled init for output layers
         for block in self.blocks:
@@ -526,6 +538,8 @@ def main():
 
     )
     model = GPT(cfg).to(device)
+
+    # Compile helps on newer PyTorch
     if hasattr(torch, 'compile'):
         try:
             model = torch.compile(model)
