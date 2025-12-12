@@ -122,63 +122,60 @@ class ShuffledBlockDataLoader:
     
     This ensures that in one epoch, the model sees every possible full block 
     exactly once, but in a random order (Training without replacement).
-    
-    Optimized for performance: Keeps data on GPU to avoid transfer bottlenecks
-    and uses vectorized operations for instant batch gathering.
     """
     def __init__(self, data_ids: torch.Tensor, block_size: int, batch_size: int, device: torch.device, seed: int):
-        # Move the entire dataset to the GPU immediately. 
-        # Since the dataset is small (~10-20MB), this eliminates the expensive 
-        # CPU-to-GPU transfer latency during the training loop.
-        self.data = data_ids.to(device)
+        self.data = data_ids
         self.block_size = block_size
         self.batch_size = batch_size
         self.device = device
-        
+
         # Calculate how many full context blocks fit into the dataset.
         # We subtract 1 because the targets are shifted by 1 position relative to inputs.
         n_blocks = (len(data_ids) - 1) // block_size
-        
+
         # Pre-calculate the starting index for every block in the dataset.
-        self.indices = torch.arange(0, n_blocks * block_size, block_size, device=device)
-        
-        # Pre-allocate the offset range [0, 1, ... block_size-1] on the GPU.
-        # This is used for vectorized broadcasting during batch construction.
-        self.offsets = torch.arange(block_size, device=device)
-        
-        # Create a specific generator on the device to ensure reproducibility.
-        self.generator = torch.Generator(device=device).manual_seed(seed)
+        # instead of copying data, we just store the integer pointers (0, 512, 1024...)
+        self.indices = torch.arange(0, n_blocks * block_size, block_size)
+
+        # Create a specific generator to ensure shuffling is reproducible based on the seed
+        self.generator = torch.Generator().manual_seed(seed)
         
     def __iter__(self):
         # 1. Randomization:
-        # Generate a random permutation of indices on the GPU.
-        perms = torch.randperm(len(self.indices), generator=self.generator, device=self.device)
+        # Generate a random permutation of indices [0, 1, ... num_blocks-1].
+        # This effectively shuffles the order in which we visit the chunks 
+        # without moving the actual data in memory.
+        perms = torch.randperm(len(self.indices), generator=self.generator)
         shuffled_indices = self.indices[perms]
-        
+
         # 2. Batching:
-        # Iterate through the shuffled start indices in steps of 'batch_size'
+        # Iterate through the shuffled start indices in steps of 'batch_size
         for i in range(0, len(shuffled_indices), self.batch_size):
-            # Retrieve the starting positions for this batch.
-            # Shape: [batch_size] (or smaller if this is the final partial batch)
-            batch_starts = shuffled_indices[i : i + self.batch_size]
-            
-            # 3. Vectorized Slicing:
-            # Instead of a Python loop, we use broadcasting to create a matrix of indices.
-            # batch_starts: [B, 1]
-            # offsets:      [1, T]
-            # Result:       [B, T] matrix of exact token indices.
-            batch_indices = batch_starts.unsqueeze(1) + self.offsets
-            
-            # Gather inputs and targets instantly using GPU memory access
-            x = self.data[batch_indices]
-            y = self.data[batch_indices + 1]
-            
-            yield x, y
+            batch_indices = shuffled_indices[i : i + self.batch_size]
+
+            # Drop Last:
+            # If we don't have enough chunks to fill the final batch (e.g., leftover 14 items 
+            # for a batch of 64), we skip it to maintain constant tensor shapes.
+            if len(batch_indices) < self.batch_size:
+                continue
+                
+            x_list = []
+            y_list = []
+
+            # 3. Slicing:
+            # Construct the actual tensors for this batch
+            for idx in batch_indices:
+                # Input: tokens [t, t+block_size]
+                x_list.append(self.data[idx : idx + self.block_size])
+                # Target: tokens [t+1, t+block_size+1] (Next token prediction)
+                y_list.append(self.data[idx + 1 : idx + self.block_size + 1])
+                
+            # Stack into (B, T) tensors and move to GPU
+            yield torch.stack(x_list).to(self.device), torch.stack(y_list).to(self.device)
 
     def __len__(self):
-        # Returns the total number of batches per epoch.
-        # Uses ceiling division to include the final partial batch if one exists.
-        return (len(self.indices) + self.batch_size - 1) // self.batch_size
+        # Returns the number of batches per epoch (excluding the dropped last partial batch).
+        return len(self.indices) // self.batch_size
 
 def iter_full_split(split_ids: torch.Tensor, block_size: int, batch_size: int, device: torch.device):
     span = block_size * batch_size + 1
