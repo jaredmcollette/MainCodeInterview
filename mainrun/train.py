@@ -34,7 +34,7 @@ class Hyperparameters:
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
     expansion_factor: float = 6
-    pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ROPE
+    pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ALIBI
 
     # MoE Specifics
     num_experts: int = 4
@@ -333,7 +333,7 @@ class MoELayer(nn.Module):
         # routing_weights: (B*T, top_k)
         # selected_experts: (B*T, top_k) indices
         routing_weights, selected_experts = torch.topk(router_logits, self.top_k, dim=-1)
-        routing_weights = F.softmax(routing_weights, dim=-1, dtype=torch.float).to(x.dtype)
+        routing_weights = F.softmax(routing_weights, dim=-1).to(x.dtype)
         
         final_output = torch.zeros_like(flat_x)
         
