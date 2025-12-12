@@ -373,8 +373,8 @@ class Block(nn.Module):
     def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.0):
         super().__init__()
         # Shared layer norm for both branches 
-        self.attn_norm = RMSNorm(cfg.d_model)
-        self.ffn_norm = RMSNorm(cfg.d_model)
+        self.norm = RMSNorm(cfg.d_model)
+        # self.ffn_norm = RMSNorm(cfg.d_model)
         
         self.attn = CausalSelfAttention(cfg)
         self.ffn  = MoELayer(cfg, depth)
