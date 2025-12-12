@@ -214,28 +214,21 @@ def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
     return bias
 
 def get_rotary_sin_cos(head_dim, max_seq_len, device):
-    inv_freq = 1.0 / (10000 ** (torch.arange(0, head_dim, 2, device=device).float() / head_dim))
-    t = torch.arange(max_seq_len, device=device, dtype=inv_freq.dtype)
-    freqs = torch.outer(t, inv_freq)
-    # Polar coordinates trick: concating freqs twice
-    emb = torch.cat((freqs, freqs), dim=-1)
-    return emb.cos(), emb.sin()
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+    t = torch.arange(end, device=freqs.device)
+    freqs = torch.outer(t, freqs).float()
+    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
+    return freqs_cis
 
 def apply_rope(q, k, cos, sin):
-    # Rotate half helper
-    def rotate_half(x):
-        x1 = x[..., :x.shape[-1]//2]
-        x2 = x[..., x.shape[-1]//2:]
-        return torch.cat((-x2, x1), dim=-1)
-
-    # Slice cos/sin to the sequence length of q
-    T = q.shape[2]
-    cos = cos[:T, :].unsqueeze(0).unsqueeze(0)
-    sin = sin[:T, :].unsqueeze(0).unsqueeze(0)
-
-    q_rot = (q * cos) + (rotate_half(q) * sin)
-    k_rot = (k * cos) + (rotate_half(k) * sin)
-    return q_rot, k_rot
+    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
+    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+    freqs_cis = freqs_cis[:xq.shape[1]].to(xq_.device)
+    # Broadcast for batch and heads
+    freqs_cis = freqs_cis.view(1, xq.shape[1], 1, xq.shape[3]//2)
+    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
+    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+    return xq_out.type_as(xq), xk_out.type_as(xk)
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
