@@ -53,16 +53,6 @@ class Hyperparameters:
     val_frac: float = 0.10
     log_file: str = "./logs/mainrun.log"
 
-class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-8):
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
-
-    def forward(self, x):
-        rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).sqrt()
-        return x / rms * self.weight
-
 def configure_logging(log_file: str):
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     
@@ -186,18 +176,36 @@ def iter_full_split(split_ids: torch.Tensor, block_size: int, batch_size: int, d
         yield x, y
 
 def train_tokenizer(titles: list[str], vocab_size: int, unk_token: str = "<unk>", pad_token: str = "<pad>", eos_token: str = "<eos>") -> Tokenizer:
+
+    # We enable `byte_fallback=True`. If a token isn't in the vocab, it decomposes 
+    # into UTF-8 bytes. `fuse_unk` compacts multiple errors into one token to protect context.
     tokenizer = Tokenizer(models.BPE(unk_token=unk_token, fuse_unk=True, byte_fallback=True))
-    # Pre-tokenizer: Split on whitespace but keep punctuation isolated
+
+    # Before BPE merges happen, we enforce hard boundaries at whitespace and punctuation.
+    # This prevents the model from "gluing" punctuation to words, reducing vocab redundancy.
     tokenizer.pre_tokenizer = pre_tokenizers.Sequence([
         pre_tokenizers.WhitespaceSplit(),
         pre_tokenizers.Punctuation()
     ])
+
     tokenizer.decoder = decoders.ByteLevel()
+
     trainer = trainers.BpeTrainer(
         vocab_size=vocab_size,
+        # Optimization: We intentionally exclude `pad_token`. Our streaming data loader
+        # never generates padding, so allocating a vocab slot for it would be a waste.
         special_tokens=[eos_token, unk_token],
+
+        # Regularization: Prune tokens that appear only once to force the model 
+        # to learn generalizable subwords rather than memorizing noise.
         min_frequency=2,
+
+        # Reliability: Pre-seed the vocab with all 256 fundamental byte values. 
+        # This guarantees that the `byte_fallback` mechanism always has a valid target.
         initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
+
+        # Morphology: Adds a visual marker (e.g., "##ing") to suffixes, helping
+        # the model distinguish between root words and extensions.
         continuing_subword_prefix="##"
     )
     tokenizer.train_from_iterator(titles, trainer)
@@ -231,90 +239,237 @@ class GPTConfig:
     top_k: int
     pos_emb_type: PositionalEmbeddingType
 
-# Custom linear ALiBi
-def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
-    dtype = torch.float32
-    device = None
-
-    def get_slopes(nh: int):
+def get_slopes(nh: int):
+        """Generates a unique slope (penalty factor) for each attention head."""
         if nh == 0:
             return torch.empty((0,), dtype=dtype, device=device)
+        # Linear distribution of slopes: [1/nh, 2/nh, ..., 1.0]
+        # Heads with steeper slopes focus more on recent context; 
+        # Heads with shallower slopes have a broader effective receptive field.
         slopes = torch.arange(1, nh + 1, dtype=torch.float32, device=device) / nh
         return slopes.to(dtype)
 
+def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
+    """
+    Constructs a static bias mask for Attention with Linear Biases (ALiBi).
+    
+    ALiBi adds a non-learnable bias to attention scores based on the distance 
+    between the query and the key tokens. This allows the model to:
+    1. Extrapolate to sequences longer than those seen during training.
+    2. Focus on local context without needing rotary or absolute embeddings.
+    
+    Note: This specific implementation uses a LINEAR slope distribution 
+    (1/n, 2/n... 1.0) rather than the GEOMETRIC distribution (1/2^1, 1/2^2...) 
+    proposed in the original Press et al. paper.
+    
+    Returns:
+        Tensor of shape [n_head, max_len, max_len] containing bias values.
+    """
+    dtype = torch.float32
+    device = None # Created on CPU first to save GPU memory during initialization
+
     slopes = get_slopes(n_head)
+    
+    # Create the distance matrix via broadcasting
     arange = torch.arange(max_len, dtype=dtype, device=device)
+    
+    # Query positions (Row indices): Shape [1, max_len, 1]
     i_pos = arange[None, :, None]
+    
+    # Key positions (Column indices): Shape [1, 1, max_len]
     j_pos = arange[None, None, :]
-    bias = slopes[:, None, None] * (j_pos - i_pos)
+    
+    # Calculate relative distance: (j - i)
+    # For causal attention, we only care where j <= i (past tokens).
+    # This results in negative values (penalties).
+    # Example: i=5 (current), j=3 (past) -> dist = -2
+    dist = j_pos - i_pos
+    
+    # Apply slopes across heads
+    # slopes: [n_head, 1, 1]
+    # dist:   [1, max_len, max_len]
+    # result: [n_head, max_len, max_len]
+    bias = slopes[:, None, None] * dist
     return bias
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
+    """
+    Precomputes the complex exponentials (cis = cos + i*sin) for RoPE.
+    
+    Instead of computing cos/sin during every forward pass, we cache the values
+    representing the rotation angles.
+    
+    Args:
+        dim: The dimension of the attention head (must be even).
+        end: The maximum sequence length (context window).
+        theta: The base frequency scaling factor (typically 10000.0).
+    """
+    # 1. Calculate frequencies: 1 / theta^(2i/d)
+    # We only need dim/2 frequencies because each frequency rotates a pair of numbers.
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+    
+    # 2. Create position indices: [0, 1, ..., end-1]
     t = torch.arange(end, device=freqs.device)
+    
+    # 3. Outer product: position * frequency
+    # Shape: [end, dim/2] -> represents the angle 'm * theta' for each position.
     freqs = torch.outer(t, freqs).float()
+    
+    # 4. Convert to complex form: e^(i * angle) = cos(angle) + i*sin(angle)
+    # torch.polar(abs, angle) creates complex numbers with magnitude 1.
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
     return freqs_cis
 
 def apply_rotary_emb(xq, xk, freqs_cis):
+    """
+    Applies the Rotary Positional Embedding to Query and Key states.
+    
+    This effectively rotates the Q and K vectors by an amount corresponding 
+    to their position in the sequence, allowing the attention mechanism to 
+    understand relative distances.
+    
+    Args:
+        xq: Query states [Batch, SeqLen, n_head, head_dim]
+        xk: Key states   [Batch, SeqLen, n_head, head_dim]
+        freqs_cis: Precomputed complex exponentials [MaxSeqLen, head_dim/2]
+    """
+    # 1. Reshape real inputs to look like complex pairs
+    # Shape: [B, T, H, D] -> [B, T, H, D/2, 2] -> [B, T, H, D/2] (Complex)
+    # We group adjacent elements to form real and imaginary parts.
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+    
+    # 2. Align frequencies with the current sequence length
     freqs_cis = freqs_cis[:xq.shape[1]].to(xq_.device)
-    # Broadcast for batch and heads
+    
+    # 3. Reshape frequencies for broadcasting
+    # freqs_cis: [T, D/2] -> [1, T, 1, D/2]
+    # This allows the same rotation to apply across all batches and heads.
     freqs_cis = freqs_cis.view(1, xq.shape[1], 1, xq.shape[3]//2)
+    
+    # 4. Apply Rotation via Complex Multiplication
+    # (a+ib) * (cos+isin) rotates the vector (a,b).
+    # This is mathematically equivalent to the standard RoPE matrix multiplication 
+    # but computationally faster.
     xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
     xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+    
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
+class RMSNorm(nn.Module):
+    """
+    Root Mean Square Layer Normalization (RMSNorm).
+    
+    A simplified and computationally efficient alternative to LayerNorm used in modern 
+    LLMs (e.g., LLaMA, Gopher). 
+    
+    unlike LayerNorm, RMSNorm does not re-center the mean to zero; it only re-scales 
+    invariance. This reduces computational overhead while maintaining convergence stability.
+    
+    Formula:
+        RMS(x) = sqrt(mean(x^2) + eps)
+        output = (x / RMS(x)) * weight
+    """
+    def __init__(self, dim: int, eps: float = 1e-8):
+        super().__init__()
+        self.eps = eps
+        # The learnable scaling parameter (gamma). 
+        # Unlike LayerNorm, RMSNorm typically does not use an additive bias (beta).
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        # 1. Calculate Root Mean Square
+        # Square the input, take the mean across the last dimension, add epsilon for stability, then sqrt.
+        rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).sqrt()
+        
+        # 2. Normalize and Scale
+        # Project input onto the unit hypersphere and scale by the learned weights.
+        return x / rms * self.weight
+
 class CausalSelfAttention(nn.Module):
+    """
+    Multi-Head Causal Self-Attention mechanism.
+    
+    This layer implements the core 'scaled dot-product attention' with two 
+    modern positional embedding variants:
+    1. RoPE (Rotary Positional Embeddings): Applied to Q and K vectors.
+    2. ALiBi (Attention with Linear Biases): Added to the attention scores.
+    """
     def __init__(self, cfg: GPTConfig):
         super().__init__()
-        assert cfg.d_model % cfg.n_head == 0
+        assert cfg.d_model % cfg.n_head == 0, "Model dimension must be divisible by number of heads"
+        
         self.head_dim = cfg.d_model // cfg.n_head
         self.n_head   = cfg.n_head
         self.pos_emb_type = cfg.pos_emb_type
 
+        # 1. Positional Bias Registration (ALiBi Only)
         if self.pos_emb_type == PositionalEmbeddingType.ALIBI:
-            # Register ALiBi mask
+            # We register the mask as a buffer so it is saved with the model state_dict
+            # but is not updated by the optimizer (requires_grad=False).
             self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size).to(torch.float32))
 
-
+        # 2. Projection Layers
+        # Project input to Query (Q)
         self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
+        # Project input to Key (K) and Value (V) combined
         self.kv_proj = nn.Linear(cfg.d_model, 2 * self.n_head * self.head_dim)
+        # Final output projection
         self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model)
 
-        self.attn_drop = cfg.dropout
-        self.resid_drop= nn.Dropout(cfg.dropout)
+        # 3. Regularization
+        self.attn_drop = cfg.dropout # Droput applied to attention probabilities
+        self.resid_drop= nn.Dropout(cfg.dropout) # Dropout applied to final output
 
     def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor):
-        B, T, C = x.size()
+        B, T, C = x.size() # Batch, SeqLen, Dimensions
 
-        # Project Q (all heads)
+        # 1. Q Projection & Reshape
+        # [B, T, C] -> [B, T, n_head, head_dim] -> [B, n_head, T, head_dim]
+        # We permute to isolate heads for parallel computation.
         q = self.q_proj(x).view(B, T, self.n_head, self.head_dim).permute(0, 2, 1, 3)
 
-        # Project K,V (fewer heads)
+        # 2. K, V Projection & Reshape
+        # [B, T, C] -> [B, T, 2, n_head, head_dim] -> [2, B, n_head, T, head_dim]
         kv = self.kv_proj(x).view(B, T, 2, self.n_head, self.head_dim).permute(2, 0, 3, 1, 4)
-        k, v = kv.unbind(0)
+        k, v = kv.unbind(0) # Split into K and V
 
+        # 3. Rotary Positional Embeddings (RoPE)
+        # If enabled, rotate Q and K vectors based on their sequence position.
+        # This happens *before* the dot product.
         if self.pos_emb_type == PositionalEmbeddingType.ROPE:
             q, k = apply_rotary_emb(q, k, freqs_cis)
 
-        # Attention scores
+        # 4. Attention Scores (Scaled Dot-Product)
+        # (B, H, T, D) @ (B, H, D, T) -> (B, H, T, T)
+        # We divide by sqrt(head_dim) to stabilize gradients (standard Scaling).
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
 
-        # Add ALiBi bias
+        # 5. ALiBi Injection
+        # If enabled, add static bias penalties based on relative token distance.
         if self.pos_emb_type == PositionalEmbeddingType.ALIBI:
-            bias = self.alibi_bias[:, :T, :T].unsqueeze(0).to(att.device)  # Slice to current sequence length 
+            # Slice to current sequence length T to handle variable input sizes
+            bias = self.alibi_bias[:, :T, :T].unsqueeze(0).to(att.device) 
             att = att + bias
 
-        # Apply causal mask
+        # 6. Causal Masking
+        # Apply triangular mask to ensure tokens can only attend to past positions.
+        # Upper triangle (future) is filled with -infinity (becomes 0 in softmax).
         mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
         att = att.masked_fill(mask, float('-inf'))
-        # Softmax and attention
+        
+        # 7. Softmax & Dropout
         att = F.softmax(att, dim=-1)
         att = F.dropout(att, p=self.attn_drop if self.training else 0)
+        
+        # 8. Aggregation
+        # Weighted sum of Values: (B, H, T, T) @ (B, H, T, D) -> (B, H, T, D)
         y = att @ v
+        
+        # Re-assemble heads: [B, H, T, D] -> [B, T, H, D] -> [B, T, C]
         y = y.transpose(1, 2).contiguous().view(B, T, C)
+        
+        # 9. Output Projection & Residual Dropout
         return self.resid_drop(self.o_proj(y))
 
 # SwiGLU MLP Implementation
