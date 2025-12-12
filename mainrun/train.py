@@ -14,8 +14,8 @@ from tqdm import tqdm
 import structlog
 
 class PositionalEmbeddingType(str, Enum):
-    ROPE = "rope"
     ALIBI = "alibi"
+    ROPE = "rope"
 
 @dataclass
 class Hyperparameters:
@@ -34,7 +34,7 @@ class Hyperparameters:
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
     expansion_factor: float = 6
-    pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ROPE
+    pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ALIBI
 
     # MoE Specifics
     num_experts: int = 4
@@ -268,7 +268,7 @@ class CausalSelfAttention(nn.Module):
 
         # Add ALiBi bias
         if self.pos_emb_type == PositionalEmbeddingType.ALIBI:
-            bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
+            bias = self.alibi_bias[:, :T, :T].unsqueeze(0)  # Slice to current sequence length 
             att = att + bias
 
         # Apply causal mask
@@ -515,7 +515,7 @@ def main():
         try:
             model = torch.compile(model)
             logger.log("model_compiled", mode="default")
-        except:
+        except Exception as e:
             logger.log("compilation_failed", error=str(e))
             pass
 
