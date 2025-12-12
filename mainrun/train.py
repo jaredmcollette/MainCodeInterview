@@ -542,13 +542,13 @@ def main():
     model = GPT(cfg).to(device)
 
     # Compile helps on newer PyTorch
-    if hasattr(torch, 'compile'):
-        try:
-            model = torch.compile(model)
-            logger.log("model_compiled", mode="default")
-        except:
-            logger.log("compilation_failed", error=str(e))
-            pass
+    # if hasattr(torch, 'compile'):
+    #     try:
+    #         model = torch.compile(model)
+    #         logger.log("model_compiled", mode="default")
+    #     except:
+    #         logger.log("compilation_failed", error=str(e))
+    #         pass
 
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
