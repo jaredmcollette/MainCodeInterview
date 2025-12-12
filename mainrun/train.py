@@ -37,7 +37,7 @@ class Hyperparameters:
     pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ALIBI
 
     # MoE Specifics
-    num_experts: int = 2
+    num_experts: int = 4
     top_k: int = 2
     
     epochs: int = 7
