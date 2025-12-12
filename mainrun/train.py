@@ -348,10 +348,10 @@ class MoELayer(nn.Module):
                 # Mask: which tokens chose expert 'i' for rank 'k'?
                 mask = (expert_idx == i)
                 
-                # if mask.any():
-                inp = flat_x[mask]
-                out = expert(inp)
-                final_output[mask] += weight[mask] * out
+                if mask.any():
+                    inp = flat_x[mask]
+                    out = expert(inp)
+                    final_output[mask] += weight[mask] * out
                     
         return final_output.view(B, T, C)
 
