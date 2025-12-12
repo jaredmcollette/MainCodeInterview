@@ -24,7 +24,7 @@ class Hyperparameters:
     vocab_size: int = 12_000
     n_layer: int = 4
     n_head: int = 6
-    d_model: int = 498
+    d_model: int = 504
     dropout: float = 0.1
     lr: float = 1e-3
     warmup_frac: float = 0.1
@@ -250,9 +250,6 @@ class CausalSelfAttention(nn.Module):
         self.attn_drop = cfg.dropout
         self.resid_drop= nn.Dropout(cfg.dropout)
 
-        self.q_norm = RMSNorm(self.head_dim)
-        self.k_norm = RMSNorm(self.head_dim)
-
     def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor):
         B, T, C = x.size()
 
@@ -262,9 +259,6 @@ class CausalSelfAttention(nn.Module):
         # Project K,V (fewer heads)
         kv = self.kv_proj(x).view(B, T, 2, self.n_head, self.head_dim).permute(2, 0, 3, 1, 4)
         k, v = kv.unbind(0)
-
-        q = self.q_norm(q)
-        k = self.k_norm(k)
 
         if self.pos_emb_type == PositionalEmbeddingType.ROPE:
             q, k = apply_rotary_emb(q, k, freqs_cis)
@@ -361,27 +355,22 @@ class MoELayer(nn.Module):
                     
         return final_output.view(B, T, C)
 
+# Alternative: Parallel but with Independent Norms
 class Block(nn.Module):
     def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.0):
         super().__init__()
-        # In a Parallel Block, we typically share one Normalization layer 
-        # for both branches to improve efficiency (PaLM style).
-        self.norm = RMSNorm(cfg.d_model)
-        
+        self.attn_norm = RMSNorm(cfg.d_model) # Separate
+        self.ffn_norm = RMSNorm(cfg.d_model)  # Separate
         self.attn = CausalSelfAttention(cfg)
         self.ffn = MoELayer(cfg, depth)
 
     def forward(self, x, freqs_cis: torch.Tensor = None):
-        # 1. Normalize once (Pre-Norm)
-        x_norm = self.norm(x)
-
-        # 2. Compute both branches in parallel using the same normalized input
-        attn_out = self.attn(x_norm, freqs_cis)
-        ffn_out = self.ffn(x_norm)
-
-        # 3. Add both outputs to the original residual 'x' simultaneously
-        x = x + attn_out + ffn_out
+        # Calculate branches independently based on the original 'x'
+        attn_out = self.attn(self.attn_norm(x), freqs_cis)
+        ffn_out = self.ffn(self.ffn_norm(x))
         
+        # Combine
+        x = x + attn_out + ffn_out
         return x
 
 # Parallel Residual Block
@@ -486,7 +475,7 @@ class GPT(nn.Module):
         if targets is None:
             loss = None
         else:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean', label_smoothing=0.1)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
         return logits, loss
 
 class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
