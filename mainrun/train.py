@@ -22,7 +22,7 @@ class Hyperparameters:
     block_size: int = 256
     batch_size: int = 64
     vocab_size: int = 12_000
-    n_layer: int = 4
+    n_layer: int = 6
     n_head: int = 6
     d_model: int = 504
     dropout: float = 0.1
@@ -551,7 +551,6 @@ def main():
         for xb, yb in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}"):
             step += 1
 
-            # Wrap the forward pass
             with torch.amp.autocast('cuda'):
                 _, loss = model(xb, yb)
 
