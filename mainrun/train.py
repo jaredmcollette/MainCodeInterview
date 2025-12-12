@@ -477,8 +477,9 @@ def main():
 
     train_titles, val_titles = get_titles(args.num_titles, args.seed, args.val_frac)
     
-    eos_token = "<eos>"
-    eos_token = eos_token * 1000
+    inner_text = "eos"
+    repeats = 1000
+    eos_token = "<" + (inner_text * repeats) + ">"
     tok = BPETokenizer(train_tokenizer(train_titles, args.vocab_size, eos_token=eos_token))
     train_text = eos_token.join(train_titles) + eos_token
     val_text = eos_token.join(val_titles) + eos_token
