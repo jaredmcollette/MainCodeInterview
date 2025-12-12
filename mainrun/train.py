@@ -24,7 +24,7 @@ class Hyperparameters:
     vocab_size: int = 12_000
     n_layer: int = 4
     n_head: int = 6
-    d_model: int = 510
+    d_model: int = 504
     dropout: float = 0.1
     lr: float = 1e-3
     warmup_frac: float = 0.1
