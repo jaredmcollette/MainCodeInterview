@@ -34,7 +34,7 @@ class Hyperparameters:
     final_div_factor: float = 100.0
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
-    expansion_factor: float = 6
+    expansion_factor: float = 2.67
     pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ALIBI
     betas: tuple[float, float] = (0.9, 0.999)
 
