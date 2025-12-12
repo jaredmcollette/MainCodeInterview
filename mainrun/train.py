@@ -37,7 +37,7 @@ class Hyperparameters:
     pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ALIBI
 
     # MoE Specifics
-    num_experts: int = 4
+    num_experts: int = 2
     top_k: int = 2
     
     epochs: int = 7
@@ -333,7 +333,7 @@ class MoELayer(nn.Module):
         # routing_weights: (B*T, top_k)
         # selected_experts: (B*T, top_k) indices
         routing_weights, selected_experts = torch.topk(router_logits, self.top_k, dim=-1)
-        routing_weights = F.softmax(routing_weights, dim=-1).to(x.dtype)
+        routing_weights = F.softmax(routing_weights, dim=-1, dtype=torch.float).to(x.dtype)
         
         final_output = torch.zeros_like(flat_x)
         
@@ -477,9 +477,7 @@ def main():
 
     train_titles, val_titles = get_titles(args.num_titles, args.seed, args.val_frac)
     
-    inner_text = "eos"
-    repeats = 500
-    eos_token = "<" + (inner_text * repeats) + ">"
+    eos_token = "<eos>"
     tok = BPETokenizer(train_tokenizer(train_titles, args.vocab_size, eos_token=eos_token))
     train_text = eos_token.join(train_titles) + eos_token
     val_text = eos_token.join(val_titles) + eos_token
