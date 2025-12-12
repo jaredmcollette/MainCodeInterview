@@ -376,8 +376,8 @@ class Block(nn.Module):
         self.attn_norm = RMSNorm(cfg.d_model)
         self.ffn_norm = RMSNorm(cfg.d_model)
         
-        self.attn = CausalSelfAttention(cfg)
-        self.ffn  = MLP(cfg)
+        self.attn = CausalSelfAttention(cfg, freqs_cis)
+        self.ffn  = MoELayer(cfg, depth)
         # self.drop_rate = drop_rate * (depth / cfg.n_layer)
         self.residual_scale = math.sqrt(2 * depth)
         
