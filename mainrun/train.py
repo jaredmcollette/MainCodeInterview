@@ -358,24 +358,14 @@ class MoELayer(nn.Module):
 class Block(nn.Module):
     def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.0):
         super().__init__()
-        # In a Parallel Block, we typically share one Normalization layer 
-        # for both branches to improve efficiency (PaLM style).
-        self.norm = RMSNorm(cfg.d_model)
-        
+        self.attn_norm = RMSNorm(cfg.d_model)
+        self.ffn_norm = RMSNorm(cfg.d_model)
         self.attn = CausalSelfAttention(cfg)
         self.ffn = MoELayer(cfg, depth)
 
-    def forward(self, x, freqs_cis: torch.Tensor = None):
-        # 1. Normalize once (Pre-Norm)
-        x_norm = self.norm(x)
-
-        # 2. Compute both branches in parallel using the same normalized input
-        attn_out = self.attn(x_norm, freqs_cis)
-        ffn_out = self.ffn(x_norm)
-
-        # 3. Add both outputs to the original residual 'x' simultaneously
-        x = x + attn_out + ffn_out
-        
+    def forward(self, x,  freqs_cis: torch.Tensor = None):
+        x = x + self.attn(self.attn_norm(x), freqs_cis)
+        x = x + self.ffn(self.ffn_norm(x))
         return x
 
 class GPT(nn.Module):
