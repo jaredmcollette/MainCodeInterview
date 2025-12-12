@@ -25,7 +25,7 @@ class Hyperparameters:
     vocab_size: int = 12_000
 
     # Architecture
-    n_layer: int = 6
+    n_layer: int = 4
     n_head: int = 6
     d_model: int = 504
     dropout: float = 0.1
@@ -115,37 +115,66 @@ def get_titles(num_titles: int, seed: int, val_frac: float) -> str:
     n = int(num_titles * (1 - val_frac))
     return titles[:n], titles[n:]
 
-# shuffle chunks for exact epoch coverage
-class ChunkedDataLoader:
+class ShuffledBlockDataLoader:
+    """
+    A custom data loader that treats the dataset as a continuous stream of tokens,
+    chunks it into fixed-size blocks, and serves them in shuffled batches.
+    
+    This ensures that in one epoch, the model sees every possible full block 
+    exactly once, but in a random order (Training without replacement).
+    """
     def __init__(self, data_ids: torch.Tensor, block_size: int, batch_size: int, device: torch.device, seed: int):
         self.data = data_ids
         self.block_size = block_size
         self.batch_size = batch_size
         self.device = device
-        # Calculate how many full blocks fit in the data
+
+        # Calculate how many full context blocks fit into the dataset.
+        # We subtract 1 because the targets are shifted by 1 position relative to inputs.
         n_blocks = (len(data_ids) - 1) // block_size
+
+        # Pre-calculate the starting index for every block in the dataset.
+        # instead of copying data, we just store the integer pointers (0, 512, 1024...)
         self.indices = torch.arange(0, n_blocks * block_size, block_size)
+
+        # Create a specific generator to ensure shuffling is reproducible based on the seed
         self.generator = torch.Generator().manual_seed(seed)
         
     def __iter__(self):
-        # Shuffle indices at the start of each epoch
+        # 1. Randomization:
+        # Generate a random permutation of indices [0, 1, ... num_blocks-1].
+        # This effectively shuffles the order in which we visit the chunks 
+        # without moving the actual data in memory.
         perms = torch.randperm(len(self.indices), generator=self.generator)
         shuffled_indices = self.indices[perms]
-        
+
+        # 2. Batching:
+        # Iterate through the shuffled start indices in steps of 'batch_size
         for i in range(0, len(shuffled_indices), self.batch_size):
             batch_indices = shuffled_indices[i : i + self.batch_size]
+
+            # Drop Last:
+            # If we don't have enough chunks to fill the final batch (e.g., leftover 14 items 
+            # for a batch of 64), we skip it to maintain constant tensor shapes.
             if len(batch_indices) < self.batch_size:
-                continue # Drop last incomplete batch
+                continue
                 
             x_list = []
             y_list = []
+
+            # 3. Slicing:
+            # Construct the actual tensors for this batch
             for idx in batch_indices:
+                # Input: tokens [t, t+block_size]
                 x_list.append(self.data[idx : idx + self.block_size])
+                # Target: tokens [t+1, t+block_size+1] (Next token prediction)
                 y_list.append(self.data[idx + 1 : idx + self.block_size + 1])
                 
+            # Stack into (B, T) tensors and move to GPU
             yield torch.stack(x_list).to(self.device), torch.stack(y_list).to(self.device)
 
     def __len__(self):
+        # Returns the number of batches per epoch (excluding the dropped last partial batch).
         return len(self.indices) // self.batch_size
 
 def iter_full_split(split_ids: torch.Tensor, block_size: int, batch_size: int, device: torch.device):
@@ -437,7 +466,7 @@ class GPT(nn.Module):
         tok = self.token_emb(idx)
         x = self.drop(tok)
 
-        use_checkpointing = self.training
+        use_grad_checkpointing = self.training
 
         # Determine the argument to pass (RoPE only)
         freqs_cis = None
@@ -446,7 +475,7 @@ class GPT(nn.Module):
 
         # Single unified loop
         for block in self.blocks:
-            if use_checkpointing:
+            if use_grad_checkpointing:
                 x = torch.utils.checkpoint.checkpoint(
                     block, x, freqs_cis, use_reentrant=False
                 )
@@ -500,7 +529,7 @@ def main():
     train_ids = torch.tensor(tok.encode(train_text), dtype=torch.long)
     val_ids = torch.tensor(tok.encode(val_text), dtype=torch.long)
     
-    train_loader = ChunkedDataLoader(train_ids, args.block_size, args.batch_size, device, args.seed)
+    train_loader = ShuffledBlockDataLoader(train_ids, args.block_size, args.batch_size, device, args.seed)
     batches_per_epoch = len(train_loader)
     max_steps = args.epochs * batches_per_epoch
     eval_interval = batches_per_epoch // args.evals_per_epoch
