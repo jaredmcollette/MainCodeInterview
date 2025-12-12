@@ -22,7 +22,7 @@ class Hyperparameters:
     block_size: int = 256
     batch_size: int = 64
     vocab_size: int = 12_000
-    n_layer: int = 8
+    n_layer: int = 4
     n_head: int = 6
     d_model: int = 504
     dropout: float = 0.1
@@ -432,12 +432,21 @@ class GPT(nn.Module):
         tok = self.token_emb(idx)
         x = self.drop(tok)
 
-        match self.cfg.pos_emb_type:
-            case PositionalEmbeddingType.ROPE:
-                for block in self.blocks: x = block(x, self.freqs_cis)
+        use_checkpointing = self.training
 
-            case PositionalEmbeddingType.ALIBI:
-                for block in self.blocks: x = block(x)
+        # Determine the argument to pass (RoPE only)
+        freqs_cis = None
+        if self.cfg.pos_emb_type == PositionalEmbeddingType.ROPE:
+            freqs_cis = self.freqs_cis
+
+        # Single unified loop
+        for block in self.blocks:
+            if use_checkpointing:
+                x = torch.utils.checkpoint.checkpoint(
+                    block, x, freqs_cis, use_reentrant=False
+                )
+            else:
+                x = block(x, freqs_cis)
 
         x = self.ln_f(x)
         logits = self.head(x)
@@ -545,7 +554,8 @@ def main():
     step = 0
     t0 = time.time()
 
-    scaler = torch.amp.GradScaler('cuda') 
+    use_amp = (device == "cuda")
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
 
     for epoch in range(1, args.epochs + 1):
         for xb, yb in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}"):
