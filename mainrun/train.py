@@ -376,12 +376,12 @@ class Block(nn.Module):
         self.attn_norm = RMSNorm(cfg.d_model)
         self.ffn_norm = RMSNorm(cfg.d_model)
         
-        self.attn = CausalSelfAttention(cfg, freqs_cis)
+        self.attn = CausalSelfAttention(cfg)
         self.ffn  = MoELayer(cfg, depth)
         # self.drop_rate = drop_rate * (depth / cfg.n_layer)
         self.residual_scale = math.sqrt(2 * depth)
         
-    def forward(self, x):
+    def forward(self, x,  freqs_cis: torch.Tensor = None):
         # Stochastic depth (disabled)
         # if self.training and random.random() < self.drop_rate:
         #     return x
@@ -390,7 +390,7 @@ class Block(nn.Module):
         x_norm = self.norm(x)
         # Single normalization shared by both branches
         # Compute attention and MLP in parallel
-        attn_out = self.attn(x_norm)
+        attn_out = self.attn(x_norm, freqs_cis)
         mlp_out = self.ffn(x_norm)
 
         parallel_out = (attn_out + mlp_out) / self.residual_scale
