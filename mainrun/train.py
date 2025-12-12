@@ -486,7 +486,7 @@ class GPT(nn.Module):
         if targets is None:
             loss = None
         else:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean', label_smoothing=0.1)
         return logits, loss
 
 class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
