@@ -355,46 +355,46 @@ class MoELayer(nn.Module):
                     
         return final_output.view(B, T, C)
 
-class Block(nn.Module):
-    def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.0):
-        super().__init__()
-        self.attn_norm = RMSNorm(cfg.d_model)
-        self.ffn_norm = RMSNorm(cfg.d_model)
-        self.attn = CausalSelfAttention(cfg)
-        self.ffn = MoELayer(cfg, depth)
-
-    def forward(self, x,  freqs_cis: torch.Tensor = None):
-        x = x + self.attn(self.attn_norm(x), freqs_cis)
-        x = x + self.ffn(self.ffn_norm(x))
-        return x
-
-# Parallel Residual Block
 # class Block(nn.Module):
 #     def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.0):
 #         super().__init__()
-#         # Shared layer norm for both branches 
 #         self.attn_norm = RMSNorm(cfg.d_model)
 #         self.ffn_norm = RMSNorm(cfg.d_model)
-        
 #         self.attn = CausalSelfAttention(cfg)
-#         self.ffn  = MLP(cfg)
-#         # self.drop_rate = drop_rate * (depth / cfg.n_layer)
-#         self.residual_scale = math.sqrt(2 * depth)
+#         self.ffn = MoELayer(cfg, depth)
+
+#     def forward(self, x,  freqs_cis: torch.Tensor = None):
+#         x = x + self.attn(self.attn_norm(x), freqs_cis)
+#         x = x + self.ffn(self.ffn_norm(x))
+#         return x
+
+# Parallel Residual Block
+class Block(nn.Module):
+    def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.0):
+        super().__init__()
+        # Shared layer norm for both branches 
+        self.attn_norm = RMSNorm(cfg.d_model)
+        self.ffn_norm = RMSNorm(cfg.d_model)
         
-#     def forward(self, x):
-#         # Stochastic depth (disabled)
-#         # if self.training and random.random() < self.drop_rate:
-#         #     return x
+        self.attn = CausalSelfAttention(cfg)
+        self.ffn  = MLP(cfg)
+        # self.drop_rate = drop_rate * (depth / cfg.n_layer)
+        self.residual_scale = math.sqrt(2 * depth)
+        
+    def forward(self, x):
+        # Stochastic depth (disabled)
+        # if self.training and random.random() < self.drop_rate:
+        #     return x
 
-#         residual = x
-#         x_norm = self.norm(x)
-#         # Single normalization shared by both branches
-#         # Compute attention and MLP in parallel
-#         attn_out = self.attn(x_norm)
-#         mlp_out = self.ffn(x_norm)
+        residual = x
+        x_norm = self.norm(x)
+        # Single normalization shared by both branches
+        # Compute attention and MLP in parallel
+        attn_out = self.attn(x_norm)
+        mlp_out = self.ffn(x_norm)
 
-#         parallel_out = (attn_out + mlp_out) / self.residual_scale
-#         return residual + parallel_out
+        parallel_out = (attn_out + mlp_out) / self.residual_scale
+        return residual + parallel_out
 
 class GPT(nn.Module):
     def __init__(self, cfg: GPTConfig):
