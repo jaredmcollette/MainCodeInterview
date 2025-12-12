@@ -323,11 +323,11 @@ class MoELayer(nn.Module):
         # 1. Router logits
         router_logits = self.router(flat_x)
 
-        if self.training:
-            # Add random noise to logits to force exploration
-            noise = torch.randn_like(router_logits) * self.noise_std
-            # Multiply logits by a small factor to ensure noise has effect
-            router_logits = router_logits + noise
+        # if self.training:
+        #     # Add random noise to logits to force exploration
+        #     noise = torch.randn_like(router_logits) * self.noise_std
+        #     # Multiply logits by a small factor to ensure noise has effect
+        #     router_logits = router_logits + noise
         
         # 2. Select Top-K
         # routing_weights: (B*T, top_k)
