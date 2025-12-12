@@ -34,7 +34,7 @@ class Hyperparameters:
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
     expansion_factor: float = 6
-    pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ROPE
+    pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ALIBI
 
     # MoE Specifics
     num_experts: int = 4
@@ -213,14 +213,14 @@ def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
     bias = slopes[:, None, None] * (j_pos - i_pos)
     return bias
 
-def get_rotary_sin_cos(head_dim, max_seq_len, device):
+def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
     t = torch.arange(end, device=freqs.device)
     freqs = torch.outer(t, freqs).float()
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
     return freqs_cis
 
-def apply_rope(q, k, cos, sin):
+def apply_rotary_emb(q, k, freqs_cis):
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
     freqs_cis = freqs_cis[:xq.shape[1]].to(xq_.device)
@@ -238,16 +238,9 @@ class CausalSelfAttention(nn.Module):
         self.n_head   = cfg.n_head
         self.pos_emb_type = cfg.pos_emb_type
 
-        match self.pos_emb_type:
-            case PositionalEmbeddingType.ROPE:
-                # Precompute RoPE cos/sin table
-                cos, sin = get_rotary_sin_cos(self.head_dim, cfg.block_size, device=None)
-                self.register_buffer("cos", cos, persistent=False)
-                self.register_buffer("sin", sin, persistent=False)
-            
-            case PositionalEmbeddingType.ALIBI:
-                # Register ALiBi mask
-                self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
+        if self.pos_emb_type == PositionalEmbeddingType.ALIBI:
+            # Register ALiBi mask
+            self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size))
 
 
         self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
@@ -257,7 +250,7 @@ class CausalSelfAttention(nn.Module):
         self.attn_drop = cfg.dropout
         self.resid_drop= nn.Dropout(cfg.dropout)
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor):
         B, T, C = x.size()
 
         # Project Q (all heads)
@@ -268,7 +261,7 @@ class CausalSelfAttention(nn.Module):
         k, v = kv.unbind(0)
 
         if self.pos_emb_type == PositionalEmbeddingType.ROPE:
-            q, k = apply_rope(q, k, self.cos, self.sin)
+            q, k = apply_rotary_emb(q, k, freqs_cis)
 
         # Attention scores
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
@@ -370,8 +363,8 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(cfg)
         self.ffn = MoELayer(cfg, depth)
 
-    def forward(self, x):
-        x = x + self.attn(self.attn_norm(x))
+    def forward(self, x,  freqs_cis: torch.Tensor = None):
+        x = x + self.attn(self.attn_norm(x, freqs_cis))
         x = x + self.ffn(self.ffn_norm(x))
         return x
 
@@ -412,6 +405,11 @@ class GPT(nn.Module):
         self.blocks    = nn.ModuleList([Block(cfg, i+1) for i in range(cfg.n_layer)])
         self.ln_f      = RMSNorm(cfg.d_model)
         self.head      = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
+
+        if cfg.pos_emb_type == PositionalEmbeddingType.ROPE:
+            # RoPE constants
+            self.head_dim = cfg.d_model // cfg.n_head
+            self.register_buffer("freqs_cis", precompute_freqs_cis(self.head_dim, cfg.block_size), persistent=False)
 
         self.apply(self._init_weights)
 
@@ -460,7 +458,13 @@ class GPT(nn.Module):
         tok = self.token_emb(idx)
         x = self.drop(tok)
 
-        for block in self.blocks: x = block(x)
+        match self.cfg.pos_emb_type:
+            case PositionalEmbeddingType.ROPE:
+                for block in self.blocks: x = block(x, self.freqs_cis)
+
+            case PositionalEmbeddingType.ALIBI:
+                for block in self.blocks: x = block(x)
+
         x = self.ln_f(x)
         logits = self.head(x)
         if targets is None:
