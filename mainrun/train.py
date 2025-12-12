@@ -19,29 +19,34 @@ class PositionalEmbeddingType(str, Enum):
 
 @dataclass
 class Hyperparameters:
+    # Dataset
     block_size: int = 512
     batch_size: int = 64
     vocab_size: int = 12_000
-    n_layer: int = 8
+
+    # Architecture
+    n_layer: int = 6
     n_head: int = 6
     d_model: int = 504
     dropout: float = 0.1
-    lr: float = 8e-4
-    min_lr: float = 1e-6
-    warmup_frac: float = 0.1
-    pct_start: float = 0.2
-    div_factor: float = 5.0
-    final_div_factor: float = 100.0
-    weight_decay: float = 0.1
-    evals_per_epoch: int = 3
     expansion_factor: float = 6
     pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ALIBI
-    betas: tuple[float, float] = (0.9, 0.999)
 
     # MoE Specifics
     num_experts: int = 4
     top_k: int = 2
-    
+
+    # Logging
+    evals_per_epoch: int = 3
+
+    # Optimizer/Scheduler
+    lr: float = 8e-4
+    min_lr: float = 1e-6
+    weight_decay: float = 0.1
+    betas: tuple[float, float] = (0.9, 0.999)
+    warmup_frac: float = 0.1
+
+    # Fixed Constraints
     epochs: int = 7
     seed: int = 1337
     num_titles: int = 100_000
