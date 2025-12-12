@@ -19,7 +19,7 @@ class PositionalEmbeddingType(str, Enum):
 
 @dataclass
 class Hyperparameters:
-    block_size: int = 256
+    block_size: int = 128
     batch_size: int = 64
     vocab_size: int = 12_000
     n_layer: int = 6
@@ -37,7 +37,7 @@ class Hyperparameters:
     pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ALIBI
 
     # MoE Specifics
-    num_experts: int = 2
+    num_experts: int = 4
     top_k: int = 2
     
     epochs: int = 7
