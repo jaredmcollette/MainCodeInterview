@@ -364,7 +364,7 @@ class Block(nn.Module):
         self.ffn = MoELayer(cfg, depth)
 
     def forward(self, x,  freqs_cis: torch.Tensor = None):
-        x = x + self.attn(self.attn_norm(x, freqs_cis))
+        x = x + self.attn(self.attn_norm(x), freqs_cis)
         x = x + self.ffn(self.ffn_norm(x))
         return x
 
