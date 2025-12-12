@@ -36,7 +36,7 @@ class Hyperparameters:
     evals_per_epoch: int = 3
     expansion_factor: float = 6
     pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ALIBI
-    betas: = (0.9, 0.999)
+    betas: tuple[float, float] = (0.9, 0.999)
 
     # MoE Specifics
     num_experts: int = 4
