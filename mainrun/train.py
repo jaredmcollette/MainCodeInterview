@@ -19,7 +19,7 @@ class PositionalEmbeddingType(str, Enum):
 
 @dataclass
 class Hyperparameters:
-    block_size: int = 256
+    block_size: int = 512
     batch_size: int = 64
     vocab_size: int = 12_000
     n_layer: int = 4
