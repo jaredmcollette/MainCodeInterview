@@ -240,7 +240,7 @@ class CausalSelfAttention(nn.Module):
 
         if self.pos_emb_type == PositionalEmbeddingType.ALIBI:
             # Register ALiBi mask
-            self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size).to(torch.float32), persistent=False)
+            self.register_buffer("alibi_bias", build_alibi_mask(cfg.n_head, cfg.block_size).to(torch.float32))
 
 
         self.q_proj = nn.Linear(cfg.d_model, self.n_head * self.head_dim)
