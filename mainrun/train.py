@@ -243,8 +243,9 @@ class CausalSelfAttention(nn.Module):
         assert cfg.d_model % cfg.n_head == 0
         self.head_dim = cfg.d_model // cfg.n_head
         self.n_head   = cfg.n_head
+        self.pos_emb_type = cfg.pos_emb_type
 
-        match self.pos_type:
+        match self.pos_emb_type:
             case PositionalEmbeddingType.ROPE:
                 # Precompute RoPE cos/sin table
                 cos, sin = get_rotary_sin_cos(self.head_dim, cfg.block_size, device=None)
@@ -273,14 +274,14 @@ class CausalSelfAttention(nn.Module):
         kv = self.kv_proj(x).view(B, T, 2, self.n_head, self.head_dim).permute(2, 0, 3, 1, 4)
         k, v = kv.unbind(0)
 
-        if self.pos_type == PositionalEmbeddingType.ROPE:
+        if self.pos_emb_type == PositionalEmbeddingType.ROPE:
             q, k = apply_rope(q, k, self.cos, self.sin)
 
         # Attention scores
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
 
         # Add ALiBi bias
-        if self.pos_type == PositionalEmbeddingType.ALIBI:
+        if self.pos_emb_type == PositionalEmbeddingType.ALIBI:
             bias = self.alibi_bias[:, :T, :T]  # Slice to current sequence length 
             att = att + bias
 
@@ -534,7 +535,8 @@ def main():
         dropout    = args.dropout,
         expansion_factor = args.expansion_factor,
         num_experts = args.num_experts,
-        top_k = args.top_k
+        top_k = args.top_k,
+        pos_emb_type = args.pos_emb_type
 
     )
     model = GPT(cfg).to(device)
