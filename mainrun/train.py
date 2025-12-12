@@ -323,11 +323,11 @@ class MoELayer(nn.Module):
         # 1. Router logits
         router_logits = self.router(flat_x)
 
-        if self.training:
-            # Add random noise to logits to force exploration
-            noise = torch.randn_like(router_logits) * self.noise_std
-            # Multiply logits by a small factor to ensure noise has effect
-            router_logits = router_logits + noise
+        # if self.training:
+        #     # Add random noise to logits to force exploration
+        #     noise = torch.randn_like(router_logits) * self.noise_std
+        #     # Multiply logits by a small factor to ensure noise has effect
+        #     router_logits = router_logits + noise
         
         # 2. Select Top-K
         # routing_weights: (B*T, top_k)
@@ -355,51 +355,28 @@ class MoELayer(nn.Module):
                     
         return final_output.view(B, T, C)
 
-# Alternative: Parallel but with Independent Norms
 class Block(nn.Module):
     def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.0):
         super().__init__()
-        self.attn_norm = RMSNorm(cfg.d_model) # Separate
-        self.ffn_norm = RMSNorm(cfg.d_model)  # Separate
+        # In a Parallel Block, we typically share one Normalization layer 
+        # for both branches to improve efficiency (PaLM style).
+        self.norm = RMSNorm(cfg.d_model)
+        
         self.attn = CausalSelfAttention(cfg)
         self.ffn = MoELayer(cfg, depth)
 
     def forward(self, x, freqs_cis: torch.Tensor = None):
-        # Calculate branches independently based on the original 'x'
-        attn_out = self.attn(self.attn_norm(x), freqs_cis)
-        ffn_out = self.ffn(self.ffn_norm(x))
-        
-        # Combine
+        # 1. Normalize once (Pre-Norm)
+        x_norm = self.norm(x)
+
+        # 2. Compute both branches in parallel using the same normalized input
+        attn_out = self.attn(x_norm, freqs_cis)
+        ffn_out = self.ffn(x_norm)
+
+        # 3. Add both outputs to the original residual 'x' simultaneously
         x = x + attn_out + ffn_out
+        
         return x
-
-# Parallel Residual Block
-# class Block(nn.Module):
-#     def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.0):
-#         super().__init__()
-#         # Shared layer norm for both branches 
-#         self.norm = RMSNorm(cfg.d_model)
-#         # self.ffn_norm = RMSNorm(cfg.d_model)
-        
-#         self.attn = CausalSelfAttention(cfg)
-#         self.ffn  = MoELayer(cfg, depth)
-#         # self.drop_rate = drop_rate * (depth / cfg.n_layer)
-#         self.residual_scale = math.sqrt(2 * depth)
-        
-#     def forward(self, x,  freqs_cis: torch.Tensor = None):
-#         # Stochastic depth (disabled)
-#         # if self.training and random.random() < self.drop_rate:
-#         #     return x
-
-#         residual = x
-#         x_norm = self.norm(x)
-#         # Single normalization shared by both branches
-#         # Compute attention and MLP in parallel
-#         attn_out = self.attn(x_norm, freqs_cis)
-#         mlp_out = self.ffn(x_norm)
-
-#         parallel_out = (attn_out + mlp_out) / self.residual_scale
-#         return residual + parallel_out
 
 class GPT(nn.Module):
     def __init__(self, cfg: GPTConfig):
