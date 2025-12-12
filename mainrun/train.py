@@ -21,7 +21,7 @@ class PositionalEmbeddingType(str, Enum):
 class Hyperparameters:
     block_size: int = 512
     batch_size: int = 64
-    vocab_size: int = 12_000
+    vocab_size: int = 16_000
     n_layer: int = 4
     n_head: int = 6
     d_model: int = 504
@@ -35,7 +35,7 @@ class Hyperparameters:
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
     expansion_factor: float = 6
-    pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ROPE
+    pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ALIBI
     betas: tuple[float, float] = (0.9, 0.999)
 
     # MoE Specifics
