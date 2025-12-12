@@ -124,7 +124,7 @@ class ShuffledBlockDataLoader:
     exactly once, but in a random order (Training without replacement).
     """
     def __init__(self, data_ids: torch.Tensor, block_size: int, batch_size: int, device: torch.device, seed: int):
-        self.data = data_ids
+        self.data = data_ids.to(device)
         self.block_size = block_size
         self.batch_size = batch_size
         self.device = device
@@ -170,8 +170,8 @@ class ShuffledBlockDataLoader:
                 # Target: tokens [t+1, t+block_size+1] (Next token prediction)
                 y_list.append(self.data[idx + 1 : idx + self.block_size + 1])
                 
-            # Stack into (B, T) tensors and move to GPU
-            yield torch.stack(x_list).to(self.device), torch.stack(y_list).to(self.device)
+            # Stack into (B, T) tensors
+            yield torch.stack(x_list), torch.stack(y_list)
 
     def __len__(self):
         # Returns the number of batches per epoch (excluding the dropped last partial batch).
