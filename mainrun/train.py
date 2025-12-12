@@ -27,14 +27,14 @@ class Hyperparameters:
     d_model: int = 504
     dropout: float = 0.1
     lr: float = 1e-3
-    min_lr: float = 1e-6
+    min_lr: float = 6e-4
     warmup_frac: float = 0.1
     pct_start: float = 0.2
     div_factor: float = 5.0
     final_div_factor: float = 100.0
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
-    expansion_factor: float = 2.67
+    expansion_factor: float = 6
     pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ALIBI
     betas: tuple[float, float] = (0.9, 0.999)
 
