@@ -26,8 +26,8 @@ class Hyperparameters:
     n_head: int = 6
     d_model: int = 504
     dropout: float = 0.1
-    lr: float = 1e-3
-    min_lr: float = 6e-4
+    lr: float = 8e-4
+    min_lr: float = 1e-6
     warmup_frac: float = 0.1
     pct_start: float = 0.2
     div_factor: float = 5.0
