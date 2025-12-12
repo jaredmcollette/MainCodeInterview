@@ -34,7 +34,7 @@ class Hyperparameters:
     weight_decay: float = 0.1
     evals_per_epoch: int = 3
     expansion_factor: float = 6
-    pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ALIBI
+    pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ROPE
 
     # MoE Specifics
     num_experts: int = 4
@@ -323,11 +323,11 @@ class MoELayer(nn.Module):
         # 1. Router logits
         router_logits = self.router(flat_x)
 
-        # if self.training:
-        #     # Add random noise to logits to force exploration
-        #     noise = torch.randn_like(router_logits) * self.noise_std
-        #     # Multiply logits by a small factor to ensure noise has effect
-        #     router_logits = router_logits + noise
+        if self.training:
+            # Add random noise to logits to force exploration
+            noise = torch.randn_like(router_logits) * self.noise_std
+            # Multiply logits by a small factor to ensure noise has effect
+            router_logits = router_logits + noise
         
         # 2. Select Top-K
         # routing_weights: (B*T, top_k)
@@ -511,13 +511,13 @@ def main():
     model = GPT(cfg).to(device)
 
     # Compile helps on newer PyTorch
-    # if hasattr(torch, 'compile'):
-    #     try:
-    #         model = torch.compile(model)
-    #         logger.log("model_compiled", mode="default")
-    #     except:
-    #         logger.log("compilation_failed", error=str(e))
-    #         pass
+    if hasattr(torch, 'compile'):
+        try:
+            model = torch.compile(model)
+            logger.log("model_compiled", mode="default")
+        except:
+            logger.log("compilation_failed", error=str(e))
+            pass
 
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
