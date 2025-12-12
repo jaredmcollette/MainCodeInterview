@@ -544,18 +544,23 @@ def main():
     ptr = 0
     step = 0
     t0 = time.time()
+
+    scaler = torch.amp.GradScaler('cuda') 
+
     for epoch in range(1, args.epochs + 1):
         for xb, yb in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}"):
             step += 1
 
             # Wrap the forward pass
-            # with torch.amp.autocast('cuda'):
-            _, loss = model(xb, yb)
+            with torch.amp.autocast('cuda'):
+                _, loss = model(xb, yb)
 
             opt.zero_grad(set_to_none=True)
-            loss.backward()
+            scaler.scale(loss).backward()
+            scaler.unscale_(opt)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            opt.step()
+            scaler.step(opt)
+            scaler.update()
             scheduler.step()
 
             elapsed = time.time() - t0
