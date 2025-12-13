@@ -804,11 +804,7 @@ class GPT(nn.Module):
             
         return logits, loss
 
-# import math
-# import torch
-# from torch.optim.lr_scheduler import _LRScheduler
-
-class CosineWarmupScheduler(_LRScheduler):
+class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
     """
     Learning rate scheduler with Linear Warmup and Cosine Decay.
 
