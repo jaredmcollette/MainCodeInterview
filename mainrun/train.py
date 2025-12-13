@@ -27,7 +27,7 @@ class Hyperparameters:
     # Architecture
     n_layer: int = 4
     n_head: int = 6
-    d_model: int = 504
+    d_model: int = 510
     dropout: float = 0.1
     expansion_factor: float = 6
     pos_emb_type: PositionalEmbeddingType = PositionalEmbeddingType.ALIBI
@@ -905,6 +905,52 @@ def measure_inference_latency(model, device, block_size=128, n_runs=100):
     end_time = time.time()
     return (end_time - start_time) / n_runs
 
+def generate_new_headlines(model, tokenizer, device, num_headlines=10, max_len=50, temperature=0.8):
+    """
+    Generates new headlines by sampling from the model.
+    """
+    model.eval()
+    headlines = []
+    
+    # The tokenizer wrapper returns a list of IDs.
+    # We start with <eos> because that is how titles were separated in training.
+    start_token_ids = tokenizer.encode("<eos>")
+    eos_id = start_token_ids[0]
+    
+    with torch.no_grad():
+        for _ in range(num_headlines):
+            # Initialize context with [EOS] (Batch size 1, Seq len 1)
+            idx = torch.tensor([start_token_ids], dtype=torch.long, device=device)
+            
+            for _ in range(max_len):
+                # Ensure context doesn't exceed block size
+                idx_cond = idx if idx.size(1) <= model.cfg.block_size else idx[:, -model.cfg.block_size:]
+                
+                # Forward pass
+                logits, _ = model(idx_cond)
+                
+                # Get logits for the last token and scale by temperature
+                logits = logits[:, -1, :] / temperature
+                
+                # Convert to probabilities and sample
+                probs = F.softmax(logits, dim=-1)
+                idx_next = torch.multinomial(probs, num_samples=1)
+                
+                # Stop if the model generates an <eos> token (end of title)
+                if idx_next.item() == eos_id:
+                    break
+                    
+                # Append the predicted token to the sequence
+                idx = torch.cat((idx, idx_next), dim=1)
+            
+            # Decode the generated sequence back to text
+            # The BPETokenizer wrapper handles skip_special_tokens internally
+            generated_text = tokenizer.decode(idx[0].tolist())
+            headlines.append(generated_text.strip())
+            
+    model.train()
+    return headlines
+
 def main():
     args = Hyperparameters()
     torch.manual_seed(args.seed)
@@ -1074,7 +1120,21 @@ def main():
 
     # Final Inference Latency Measurement
     latency_ms = measure_inference_latency(model, device) * 1000
-    logger.log("final_model", inference_latency_ms=latency_ms)
+    logger.log("final_model", inference_latency_ms=latency_ms, prnt=False)
+
+    # --- Generate and Save Headlines ---
+    print("\nGenerating 10 new headlines...")
+    generated_headlines = generate_new_headlines(model, tok, device, num_headlines=10)
+    
+    output_filename = "generated_headlines.txt"
+    with open(output_filename, "w", encoding="utf-8") as f:
+        for i, head in enumerate(generated_headlines):
+            # Print to console
+            print(f"{i+1}. {head}")
+            # Write to file
+            f.write(f"{head}\n")
+            
+    logger.log("headlines_saved", file=output_filename, count=len(generated_headlines))
 
 if __name__ == "__main__":
     try:
