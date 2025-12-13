@@ -882,6 +882,29 @@ class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
                 for base_lr in self.base_lrs
             ]
 
+def measure_inference_latency(model, device, block_size=128, n_runs=100):
+    model.eval()
+    dummy_input = torch.randint(0, 1000, (1, block_size)).to(device)
+    
+    # Warmup
+    for _ in range(10):
+        with torch.no_grad():
+            _ = model(dummy_input)
+            
+    if device == "cuda":
+        torch.cuda.synchronize()
+        
+    start_time = time.time()
+    for _ in range(n_runs):
+        with torch.no_grad():
+            _ = model(dummy_input)
+            
+    if device == "cuda":
+        torch.cuda.synchronize()
+        
+    end_time = time.time()
+    return (end_time - start_time) / n_runs
+
 def main():
     args = Hyperparameters()
     torch.manual_seed(args.seed)
@@ -1048,6 +1071,10 @@ def main():
                           max_steps=max_steps,
                           loss=val_loss,
                           elapsed_time=elapsed)
+
+    # Final Inference Latency Measurement
+    latency_ms = measure_inference_latency(model, device) * 1000
+    logger.log("final_model", inference_latency_ms=latency_ms)
 
 if __name__ == "__main__":
     try:
