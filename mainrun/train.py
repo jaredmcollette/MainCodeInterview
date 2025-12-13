@@ -664,32 +664,65 @@ class Block(nn.Module):
         return x
 
 class GPT(nn.Module):
+    """
+    The main GPT architecture (Decoder-only Transformer).
+    
+    Features:
+    - Pre-Norm architecture with RMSNorm.
+    - Sparse Mixture-of-Experts (MoE) FFN layers.
+    - Rotary (RoPE) or ALiBi positional embeddings.
+    - Weight Tying between Embedding and LM Head.
+    """
     def __init__(self, cfg: GPTConfig):
         super().__init__()
         self.cfg = cfg
+        
+        # 1. Token Embeddings
+        # Maps integer indices to vector representations.
         self.token_emb = nn.Embedding(cfg.vocab_size, cfg.d_model)
-        self.drop      = nn.Dropout(cfg.dropout)
-        self.blocks    = nn.ModuleList([Block(cfg, i+1) for i in range(cfg.n_layer)])
-        self.ln_f      = RMSNorm(cfg.d_model)
-        self.head      = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
+        self.emb_dropout = nn.Dropout(cfg.dropout)
+        
+        # 2. Transformer Blocks
+        # We wrap them in ModuleList to register them properly with PyTorch.
+        self.blocks = nn.ModuleList([Block(cfg, layer_depth=i+1) for i in range(cfg.n_layer)])
+        
+        # 3. Final Normalization
+        # Applied before the final projection to vocabulary.
+        self.final_norm = RMSNorm(cfg.d_model)
+        
+        # 4. Language Model Head
+        # Projects hidden states back to vocabulary logits.
+        self.lm_head = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
 
+        # 5. RoPE Cache Setup
         if cfg.pos_emb_type == PositionalEmbeddingType.ROPE:
-            # RoPE constants
             self.head_dim = cfg.d_model // cfg.n_head
+            # persistent=False: Don't save this in the state_dict (it's re-computable).
             self.register_buffer("freqs_cis", precompute_freqs_cis(self.head_dim, cfg.block_size), persistent=False)
 
+        # 6. Weight Initialization
         self.apply(self._init_weights)
 
-        # Depth-scaled init for output layers
+        # 7. Depth-Scaled Initialization (GPT-2/DeepNet trick)
+        # We scale down the weights of residual projections (Attention Output & FFN Output)
+        # by 1/sqrt(2 * n_layer). This prevents variance from growing with depth.
+        scaling_factor = 0.02 / math.sqrt(2 * cfg.n_layer)
+        
         for block in self.blocks:
-            nn.init.normal_(block.attn.o_proj.weight, mean=0.0, std=0.02 / math.sqrt(2 * cfg.n_layer))
-            for expert in block.ffn.experts:
-                nn.init.normal_(expert.down_proj.weight, mean=0.0, std=0.02 / math.sqrt(2 * cfg.n_layer))
+            # Scale Attention Output
+            nn.init.normal_(block.attn.o_proj.weight, mean=0.0, std=scaling_factor)
+            # Scale MoE/FFN Output (Iterate over all experts)
+            for expert in block.moe.experts:
+                nn.init.normal_(expert.down_proj.weight, mean=0.0, std=scaling_factor)
 
-        self.head.weight = self.token_emb.weight
+        # 8. Weight Tying
+        # We share weights between input embeddings and output head.
+        # This reduces parameter count significantly and improves training on small datasets.
+        self.lm_head.weight = self.token_emb.weight
 
     @staticmethod
     def _init_weights(module):
+        """Standard GPT initialization: Normal(0, 0.02)"""
         if isinstance(module, (nn.Linear, nn.Embedding)):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if isinstance(module, nn.Linear) and module.bias is not None:
@@ -697,15 +730,21 @@ class GPT(nn.Module):
         elif isinstance(module, RMSNorm):
             nn.init.constant_(module.weight, 1.0)
     
-    # --- Weight Decay logic ---
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
+        """
+        Constructs the AdamW optimizer with specific parameter groups.
+        
+        Logic:
+        - Weights (Linear, Embedding) get Weight Decay.
+        - Biases and Norms do NOT get Weight Decay.
+        """
         # Filter params that require grad
         param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
         
-        # 1. Decay: Linear weights and Embeddings
+        # 1. Decay: Tensors with dim >= 2 (Weights)
         decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
         
-        # 2. No Decay: Biases, LayerNorms, Positional Embeddings
+        # 2. No Decay: Tensors with dim < 2 (Biases, RMSNorm gains)
         nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
         
         optim_groups = [
@@ -713,40 +752,54 @@ class GPT(nn.Module):
             {'params': nodecay_params, 'weight_decay': 0.0}
         ]
 
-        # Using fused AdamW if available for speed
+        # Use FusedAdamW if CUDA is available (significantly faster)
         fused = 'fused' in torch.optim.AdamW.__init__.__code__.co_varnames and 'cuda' in device_type
 
-        # Create AdamW optimizer
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, fused=fused)
-        return optimizer
+        return torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, fused=fused)
 
-    def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
-        B, T = idx.size()
-        tok = self.token_emb(idx)
-        x = self.drop(tok)
+    def forward(self, input_ids: torch.Tensor, targets: torch.Tensor | None = None):
+        """
+        Args:
+            input_ids: [Batch, SeqLen] integer indices.
+            targets:   [Batch, SeqLen] integer indices (optional).
+        """
+        B, T = input_ids.size()
+        
+        # 1. Embedding
+        x = self.token_emb(input_ids)
+        x = self.emb_dropout(x)
 
-        use_grad_checkpointing = self.training
-
-        # Determine the argument to pass (RoPE only)
+        # 2. Prepare RoPE Cache (if enabled)
         freqs_cis = None
         if self.cfg.pos_emb_type == PositionalEmbeddingType.ROPE:
             freqs_cis = self.freqs_cis
 
-        # Single unified loop
+        # 3. Transformer Blocks with Gradient Checkpointing
+        # Checkpointing trades compute for memory: It drops intermediate activations
+        # during forward pass and re-computes them during backward pass.
+        # This allows larger batch sizes on limited VRAM.
+        use_checkpointing = self.training
+
         for block in self.blocks:
-            if use_grad_checkpointing:
+            if use_checkpointing:
+                # Note: We must pass use_reentrant=False for modern PyTorch compatibility
                 x = torch.utils.checkpoint.checkpoint(
                     block, x, freqs_cis, use_reentrant=False
                 )
             else:
                 x = block(x, freqs_cis)
 
-        x = self.ln_f(x)
-        logits = self.head(x)
+        # 4. Final Norm and Projection
+        x = self.final_norm(x)
+        logits = self.lm_head(x)
+        
+        # 5. Loss Calculation
         if targets is None:
             loss = None
         else:
+            # Flatten to [Batch*SeqLen, VocabSize] for CrossEntropy
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
+            
         return logits, loss
 
 class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
