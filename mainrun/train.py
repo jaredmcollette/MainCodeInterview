@@ -802,21 +802,87 @@ class GPT(nn.Module):
             
         return logits, loss
 
-class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
-    def __init__(self, optimizer, warmup_steps, total_steps, min_lr=1e-6):
+import math
+import torch
+from torch.optim.lr_scheduler import _LRScheduler
+
+class CosineWarmupScheduler(_LRScheduler):
+    """
+    Learning rate scheduler with Linear Warmup and Cosine Decay.
+
+    This scheduler adjusts the learning rate in two phases:
+    1. **Warmup Phase**: Linearly increases the learning rate from 0 to the 
+       initial base learning rate over a set number of warmup steps.
+    2. **Cosine Decay Phase**: Gradually decreases the learning rate from the 
+       base learning rate down to `min_lr` following a cosine curve.
+
+    This is standard practice for training Transformers (e.g., GPT, BERT) to 
+    ensure training stability during early updates and convergence in later stages.
+    """
+
+    def __init__(
+        self, 
+        optimizer: torch.optim.Optimizer, 
+        warmup_steps: int, 
+        total_steps: int, 
+        min_lr: float = 1e-6,
+        last_epoch: int = -1
+    ):
+        """
+        Args:
+            optimizer (Optimizer): Wrapped optimizer.
+            warmup_steps (int): The number of steps for the linear warmup phase.
+            total_steps (int): The total number of training steps (warmup + decay).
+            min_lr (float): The minimum learning rate to maintain at the end of training.
+            last_epoch (int): The index of the last epoch/step. Default: -1.
+        """
         self.warmup_steps = warmup_steps
         self.total_steps = total_steps
         self.min_lr = min_lr
-        super().__init__(optimizer)
+        super().__init__(optimizer, last_epoch)
 
-    def get_lr(self):
-        progress = self.last_epoch / self.total_steps
-        if self.last_epoch < self.warmup_steps:
-            lr = self.base_lrs[0] * self.last_epoch / self.warmup_steps
+    def get_lr(self) -> list[float]:
+        """
+        Calculates the learning rate for the current step.
+        
+        Returns:
+            list[float]: A list of learning rates, one for each parameter group 
+                         in the optimizer.
+        """
+        # In PyTorch schedulers, 'last_epoch' represents the current step iteration
+        current_step = self.last_epoch
+
+        # 1. Warmup Phase: Linear Increase
+        if current_step < self.warmup_steps:
+            # Calculate the linear scale factor (0.0 to 1.0)
+            warmup_factor = current_step / float(max(1, self.warmup_steps))
+            
+            # Apply to all parameter groups (e.g., weights vs biases)
+            return [base_lr * warmup_factor for base_lr in self.base_lrs]
+
+        # 2. Decay Phase: Cosine Annealing
         else:
-            cos_decay = 0.5 * (1 + math.cos(math.pi * (progress - self.warmup_steps / self.total_steps) / (1 - self.warmup_steps / self.total_steps)))
-            lr = self.min_lr + (self.base_lrs[0] - self.min_lr) * cos_decay
-        return [lr for _ in self.optimizer.param_groups]
+            # Calculate progress purely within the decay phase (0.0 to 1.0)
+            # 0.0 = Just finished warmup
+            # 1.0 = Finished training
+            steps_since_warmup = current_step - self.warmup_steps
+            decay_steps_total = self.total_steps - self.warmup_steps
+            
+            # Prevent division by zero if total_steps equals warmup_steps
+            decay_phase_progress = steps_since_warmup / float(max(1, decay_steps_total))
+            
+            # Clamp progress to 1.0 to prevent negative LRs if we train past max_steps
+            decay_phase_progress = min(decay_phase_progress, 1.0)
+
+            # Calculate Cosine Coefficient (starts at 1.0, ends at 0.0)
+            # Formula: 0.5 * (1 + cos(pi * progress))
+            cosine_coeff = 0.5 * (1.0 + math.cos(math.pi * decay_phase_progress))
+
+            # Apply decay to all parameter groups
+            return [
+                self.min_lr + (base_lr - self.min_lr) * cosine_coeff
+                for base_lr in self.base_lrs
+            ]
 
 def main():
     args = Hyperparameters()
