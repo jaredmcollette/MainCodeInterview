@@ -74,7 +74,7 @@ def analyze_lengths(df):
     ax[1].set_xlabel('Tokens')
     
     plt.tight_layout()
-    plt.savefig('1_length_distribution.png')
+    plt.savefig('figures/1_length_distribution.png')
     print("-> Generated 1_length_distribution.png")
     
     return df
@@ -113,7 +113,7 @@ def analyze_vocabulary(df):
         ax[1].set_title('Top 20 Bigrams')
 
         plt.tight_layout()
-        plt.savefig('2_vocabulary_frequency.png')
+        plt.savefig('figures/2_vocabulary_frequency.png')
         print("-> Generated 2_vocabulary_frequency.png")
     except ValueError:
         print("Not enough data to generate vocabulary plots.")
@@ -138,7 +138,7 @@ def analyze_zipf_law(df):
     plt.ylabel("Frequency (Log)")
     plt.grid(True, which="both", ls="--")
     
-    plt.savefig('3_zipfs_law.png')
+    plt.savefig('figures/3_zipfs_law.png')
     print("-> Generated 3_zipfs_law.png")
 
 # --- Main Execution ---
