@@ -418,8 +418,8 @@ class CausalSelfAttention(nn.Module):
         self.o_proj = nn.Linear(self.n_head * self.head_dim, cfg.d_model)
 
         # 3. Regularization
-        self.attn_drop = cfg.dropout # Droput applied to attention probabilities
-        self.resid_drop= nn.Dropout(cfg.dropout) # Dropout applied to final output
+        self.attn_dropout_p = cfg.dropout # Droput applied to attention probabilities
+        self.resid_dropout = nn.Dropout(cfg.dropout) # Dropout applied to final output
 
     def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor):
         B, T, C = x.size() # Batch, SeqLen, Dimensions
@@ -443,120 +443,224 @@ class CausalSelfAttention(nn.Module):
         # 4. Attention Scores (Scaled Dot-Product)
         # (B, H, T, D) @ (B, H, D, T) -> (B, H, T, T)
         # We divide by sqrt(head_dim) to stabilize gradients (standard Scaling).
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
+        attn_scores = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
 
         # 5. ALiBi Injection
         # If enabled, add static bias penalties based on relative token distance.
         if self.pos_emb_type == PositionalEmbeddingType.ALIBI:
             # Slice to current sequence length T to handle variable input sizes
-            bias = self.alibi_bias[:, :T, :T].unsqueeze(0).to(att.device) 
-            att = att + bias
+            bias = self.alibi_bias[:, :T, :T].unsqueeze(0).to(attn_scores.device) 
+            attn_scores = attn_scores + bias
 
         # 6. Causal Masking
         # Apply triangular mask to ensure tokens can only attend to past positions.
         # Upper triangle (future) is filled with -infinity (becomes 0 in softmax).
         mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
-        att = att.masked_fill(mask, float('-inf'))
+        attn_scores = attn_scores.masked_fill(mask, float('-inf'))
         
         # 7. Softmax & Dropout
-        att = F.softmax(att, dim=-1)
-        att = F.dropout(att, p=self.attn_drop if self.training else 0)
+        # Convert scores to probabilities (Weights)
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        attn_weights = F.dropout(attn_weights, p=self.attn_dropout_p if self.training else 0)
         
         # 8. Aggregation
         # Weighted sum of Values: (B, H, T, T) @ (B, H, T, D) -> (B, H, T, D)
-        y = att @ v
+        y = attn_weights @ v
         
         # Re-assemble heads: [B, H, T, D] -> [B, T, H, D] -> [B, T, C]
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         
         # 9. Output Projection & Residual Dropout
-        return self.resid_drop(self.o_proj(y))
+        return self.resid_dropout(self.o_proj(y))
 
-# SwiGLU MLP Implementation
-class MLP(nn.Module):
-    def __init__(self, cfg: GPTConfig, depth: int):
+class SwiGLU(nn.Module):
+    """
+    SwiGLU: A Gated Linear Unit variant with Swish (SiLU) activation.
+    
+    This replaces the standard MLP (Linear -> GELU -> Linear) found in older 
+    Transformers (like GPT-2/BERT). 
+    
+    Mechanism:
+    It projects the input into two parallel paths:
+    1. A "Gate" path (activated by SiLU).
+    2. A "Value" path (linear).
+    The two paths are multiplied element-wise before being projected down.
+    """
+    def __init__(self, cfg: GPTConfig, layer_depth: int):
         super().__init__()
+
+        # Architectural Choice:
+        # While standard SwiGLU implementations (like LLaMA) often reduce this factor 
+        # to ~2.67 to match the parameter count of a standard GELU MLP, we strictly 
+        # use an expansion factor of 6.
+        #
+        # Empirically, this "Wider" configuration maximizes representational capacity,
+        # yielding the lowest validation loss for this specific dataset size, 
+        # prioritizing performance over parameter efficiency.
         hidden_dim = int(cfg.d_model * cfg.expansion_factor)
         
+        # LLaMA-style naming convention:
+        # 1. gate_proj: The "Switch" (determines which features pass through).
         self.gate_proj = nn.Linear(cfg.d_model, hidden_dim, bias=False)
+        
+        # 2. up_proj: The "Content" (projects input up to the hidden representation).
         self.up_proj = nn.Linear(cfg.d_model, hidden_dim, bias=False)
+        
+        # 3. down_proj: The "Output" (projects combined features back to model dim).
         self.down_proj = nn.Linear(hidden_dim, cfg.d_model, bias=False)
         
         self.dropout = nn.Dropout(cfg.dropout)
-        self.depth_scale = 1 / math.sqrt(depth)
+        
+        # Depth Scaling:
+        # This technique (from DeepNet/CogView) stabilizes gradients in deeper networks.
+        self.output_scale = 1 / math.sqrt(layer_depth)
 
     def forward(self, x):
-        # SwiGLU variant
-        x = F.silu(self.gate_proj(x)) * self.up_proj(x)
-        x = self.down_proj(x) * self.depth_scale
+        # 1. Calculate the Gate (0 to 1-ish activation)
+        gate = F.silu(self.gate_proj(x))
+        
+        # 2. Calculate the Raw Features
+        features = self.up_proj(x)
+        
+        # 3. Apply Gating (Element-wise multiplication)
+        # The gate selectively amplifies or suppresses specific features.
+        x = gate * features
+        
+        # 4. Down-Project and Scale
+        x = self.down_proj(x) * self.output_scale
         x = self.dropout(x)
         return x
 
-# 2. MoE Router
-class MoELayer(nn.Module):
-    def __init__(self, cfg: GPTConfig, depth: int):
+class SparseMoE(nn.Module):
+    """
+    Sparse Mixture of Experts (MoE) Layer.
+    
+    Implements a Top-K Router that dynamically routes tokens to a subset of 
+    expert networks (SwiGLU blocks).
+    
+    Benefits:
+    - Scales model parameters significantly without increasing inference FLOPs.
+    - Top-K routing ensures sparsity (only K experts are active per token).
+    
+    Mechanism:
+    1. A 'Router' (Linear) predicts which experts are best for a given token.
+    2. Gaussian noise is added during training (Jitter) to encourage load balancing.
+    3. The top-k experts are selected, and their outputs are weighted-summed.
+    """
+    def __init__(self, cfg: GPTConfig, layer_depth: int):
         super().__init__()
         self.num_experts = cfg.num_experts
         self.top_k = cfg.top_k
         
-        # The router decides which experts get which tokens
+        # The Gating Network (Router)
+        # Maps token representations to 'num_experts' scores.
         self.router = nn.Linear(cfg.d_model, self.num_experts, bias=False)
         
-        # Create 'num_experts' instances of the SwiGLU layer
-        self.experts = nn.ModuleList([MLP(cfg, depth) for _ in range(self.num_experts)])
+        # The Experts
+        # A collection of independent feed-forward networks (SwiGLU).
+        self.experts = nn.ModuleList([SwiGLU(cfg, layer_depth) for _ in range(self.num_experts)])
 
-        self.noise_std = 0.1  # Amount of noise to add
+        # Jitter Noise Standard Deviation
+        # Standard technique to prevent "Router Collapse" (where the router 
+        # always picks the same experts, leaving others untrained).
+        self.jitter_std = 0.1 
 
     def forward(self, x):
         B, T, C = x.shape
+        # Flatten batch and sequence to treat every token independently
         flat_x = x.view(-1, C)
         
-        # 1. Router logits
+        # 1. Calculate Router Logits
         router_logits = self.router(flat_x)
 
         if self.training:
-            # Add random noise to logits to force exploration
-            noise = torch.randn_like(router_logits) * self.noise_std
-            # Multiply logits by a small factor to ensure noise has effect
+            # Inject Jitter (Noise)
+            # We add standard normal noise to the logits to ensure exploration.
+            noise = torch.randn_like(router_logits) * self.jitter_std
             router_logits = router_logits + noise
         
-        # 2. Select Top-K
-        # routing_weights: (B*T, top_k)
-        # selected_experts: (B*T, top_k) indices
-        routing_weights, selected_experts = torch.topk(router_logits, self.top_k, dim=-1)
-        routing_weights = F.softmax(routing_weights, dim=-1, dtype=torch.float).to(x.dtype)
+        # 2. Select Top-K Experts
+        # router_values: The raw logit scores of the chosen experts
+        # expert_indices: The IDs (0 to num_experts-1) of the chosen experts
+        router_values, expert_indices = torch.topk(router_logits, self.top_k, dim=-1)
         
+        # 3. Calculate Gate Probabilities
+        # We apply Softmax ONLY to the top-k values, not the full list.
+        # This ensures the weights sum to 1.0 among the active experts.
+        gate_probs = F.softmax(router_values, dim=-1, dtype=torch.float).to(x.dtype)
+        
+        # Initialize output tensor
         final_output = torch.zeros_like(flat_x)
         
-        # 3. Process Experts
-        # Loop through each rank (1st choice, 2nd choice...)
+        # 4. Expert Dispatch & Aggregation
+        # We iterate through the k ranks (e.g., 1st best expert, 2nd best expert).
+        # Note: In production (Megatron/Deepspeed), this is usually done via 
+        # Permutation/Unpermutation scatters, but looping is clearer for logic.
         for k in range(self.top_k):
-            expert_idx = selected_experts[:, k]
-            weight = routing_weights[:, k].unsqueeze(-1)
+            # Which expert was selected for the k-th rank for each token?
+            selected_expert_idxs = expert_indices[:, k]
             
-            # Iterate over all available experts
+            # The weighting factor for this rank
+            gate_weight = gate_probs[:, k].unsqueeze(-1)
+            
+            # Iterate over all physical experts to find tokens assigned to them
             for i, expert in enumerate(self.experts):
-                # Mask: which tokens chose expert 'i' for rank 'k'?
-                mask = (expert_idx == i)
+                # Boolean Mask: Is token 't' assigned to expert 'i' at rank 'k'?
+                expert_mask = (selected_expert_idxs == i)
                 
-                if mask.any():
-                    inp = flat_x[mask]
-                    out = expert(inp)
-                    final_output[mask] += weight[mask] * out
+                if expert_mask.any():
+                    # Extract tokens assigned to this expert
+                    tokens_for_expert = flat_x[expert_mask]
+                    
+                    # Process tokens
+                    expert_out = expert(tokens_for_expert)
+                    
+                    # Weighted Accumulation
+                    # output += (prob * expert_output)
+                    final_output[expert_mask] += gate_weight[expert_mask] * expert_out
                     
         return final_output.view(B, T, C)
 
 class Block(nn.Module):
-    def __init__(self, cfg: GPTConfig, depth: int, drop_rate: float = 0.0):
+    """
+    A single Transformer Decoder Block using the Pre-Norm architecture.
+    
+    Structure:
+        x = x + Attention(RMSNorm(x))
+        x = x + MoE(RMSNorm(x))
+        
+    This 'Pre-Norm' design (normalizing *before* the layer) is preferred over 
+    Post-Norm (original BERT/GPT) because it creates a clear gradient path 
+    down the residual stream, significantly improving training stability 
+    for deep networks.
+    """
+    def __init__(self, cfg: GPTConfig, layer_depth: int):
         super().__init__()
-        self.attn_norm = RMSNorm(cfg.d_model)
-        self.ffn_norm = RMSNorm(cfg.d_model)
+        
+        # 1. Attention Block Components
+        # 'input_norm' is applied before the Self-Attention layer.
+        self.input_norm = RMSNorm(cfg.d_model)
         self.attn = CausalSelfAttention(cfg)
-        self.ffn = MoELayer(cfg, depth)
 
-    def forward(self, x,  freqs_cis: torch.Tensor = None):
-        x = x + self.attn(self.attn_norm(x), freqs_cis)
-        x = x + self.ffn(self.ffn_norm(x))
+        # 2. Feed-Forward Block Components
+        # 'post_attn_norm' is applied before the Mixture-of-Experts layer.
+        self.post_attn_norm = RMSNorm(cfg.d_model)
+        
+        # We replace the standard dense MLP with a Sparse Mixture of Experts.
+        # This increases total parameters (knowledge capacity) while keeping
+        # active parameters (inference cost) low.
+        self.moe = SparseMoE(cfg, layer_depth)
+
+    def forward(self, x, freqs_cis: torch.Tensor = None):
+        # 1. Self-Attention Sublayer
+        # Note the Residual connection (x + ...). 
+        # The gradients flow directly through the '+' without passing through the norm.
+        h = self.input_norm(x)
+        x = x + self.attn(h, freqs_cis)
+        
+        # 2. Mixture-of-Experts Sublayer
+        h = self.post_attn_norm(x)
+        x = x + self.moe(h)
         return x
 
 class GPT(nn.Module):
