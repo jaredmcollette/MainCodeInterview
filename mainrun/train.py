@@ -99,7 +99,7 @@ def configure_logging(log_file: str):
 
 logger = None
 
-def get_titles(num_titles: int, seed: int, val_frac: float) -> str:
+def get_titles(num_titles: int, seed: int, val_frac: float) -> tuple[list[str], list[str]]:
     ds = load_dataset("julien040/hacker-news-posts", split="train", cache_dir="./data").shuffle(seed=seed)
     titles = [row["title"].strip() for row in ds.take(num_titles)]
     n = int(num_titles * (1 - val_frac))
@@ -728,6 +728,8 @@ class GPT(nn.Module):
             if isinstance(module, nn.Linear) and module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, RMSNorm):
+            # RMSNorm has no bias, only a learnable scale parameter.
+            # We initialize it to 1.0 so the layer starts as a neutral identity operation.
             nn.init.constant_(module.weight, 1.0)
     
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
@@ -901,12 +903,19 @@ def main():
     train_titles, val_titles = get_titles(args.num_titles, args.seed, args.val_frac)
     
     eos_token = "<eos>"
+
+     # Critical Fix: We now train the tokenizer ONLY on 'train_titles'. 
+    # Previously, including 'val_titles' caused data leakage, where the model 
+    # effectively saw the validation vocabulary before training.
     tok = BPETokenizer(train_tokenizer(train_titles, args.vocab_size, eos_token=eos_token))
+
     train_text = eos_token.join(train_titles) + eos_token
     val_text = eos_token.join(val_titles) + eos_token
     train_ids = torch.tensor(tok.encode(train_text), dtype=torch.long)
     val_ids = torch.tensor(tok.encode(val_text), dtype=torch.long)
     
+    # Replaced manual batch indexing with a dedicated class that handles 
+    # block shuffling and dropping partial batches.
     train_loader = ShuffledBlockDataLoader(train_ids, args.block_size, args.batch_size, device, args.seed)
     batches_per_epoch = len(train_loader)
     max_steps = args.epochs * batches_per_epoch
@@ -933,22 +942,27 @@ def main():
     )
     model = GPT(cfg).to(device)
 
-    # Compile helps on newer PyTorch
+    # Attempt to compile the model for faster training via kernel fusion.
+    # We use a try-except block because compilation relies on the Triton backend,
+    # which is often missing (e.g., on Windows) or incompatible with older GPUs.
+    # If it fails, we log the error and gracefully fall back to standard execution.
     if hasattr(torch, 'compile'):
         try:
             model = torch.compile(model)
             logger.log("model_compiled", mode="default")
         except Exception as e:
             logger.log("compilation_failed", error=str(e))
-            pass
 
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
     
-    opt = model.configure_optimizers(args.weight_decay, args.lr, args.betas, device)
+     # We switch from raw SGD to the model's internal optimizer configuration 
+    # (usually AdamW with specific weight decay rules for biases vs weights).
+    optimizer = model.configure_optimizers(args.weight_decay, args.lr, args.betas, device)
 
+    # Initialize the custom scheduler that warms up linearly then decays via cosine.
     warmup_steps = int(args.warmup_frac * max_steps)
-    scheduler = CosineWarmupScheduler(opt, warmup_steps, max_steps, args.min_lr)
+    scheduler = CosineWarmupScheduler(optimizer, warmup_steps, max_steps, args.min_lr)
 
     def evaluate():
         model.eval()
@@ -966,22 +980,45 @@ def main():
     step = 0
     t0 = time.time()
 
-    use_amp = (device == "cuda")
-    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
+    # Automatic Mixed Precision (AMP) uses float16 (or bfloat16) for matrix 
+    # multiplications to speed up training and save VRAM, while keeping 
+    # master weights in float32 for stability.
+    enable_mixed_precision  = (device == "cuda")
+
+    # The GradScaler prevents "underflow" (gradients becoming so small they vanish 
+    # in float16) by multiplying the loss by a large factor before backward().
+    grad_scaler = torch.amp.GradScaler('cuda', enabled=enable_mixed_precision )
 
     for epoch in range(1, args.epochs + 1):
         for xb, yb in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}"):
             step += 1
 
-            with torch.amp.autocast('cuda'):
+            # 1. Forward Pass with Autocast
+            # The context manager automatically chooses the best precision (fp16/fp32) 
+            # for each operation.
+            with torch.amp.autocast('cuda', enabled=enable_mixed_precision):
                 _, loss = model(xb, yb)
 
-            opt.zero_grad(set_to_none=True)
-            scaler.scale(loss).backward()
-            scaler.unscale_(opt)
+            # 2. Backward Pass with Scaling
+            optimizer.zero_grad(set_to_none=True)
+
+             # Scale loss to preserve small gradients
+            grad_scaler.scale(loss).backward()
+
+            # 3. Gradient Clipping
+            # We must unscale the gradients *before* clipping, otherwise the norm 
+            # calculation would be based on the scaled (huge) values.
+            grad_scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(opt)
-            scaler.update()
+
+            # 4. Optimizer Step
+            # If gradients contain Infs/NaNs (after unscaling), the scaler skips 
+            # this step automatically.
+            grad_scaler.step(optimizer)
+
+            # Updates the scale factor for the next iteration
+            grad_scaler.update()
+
             scheduler.step()
 
             elapsed = time.time() - t0
