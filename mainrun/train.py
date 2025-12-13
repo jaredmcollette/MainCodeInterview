@@ -987,6 +987,7 @@ def main():
 
     for epoch in range(1, args.epochs + 1):
         for xb, yb in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}"):
+            step_start = time.time()
             step += 1
 
             # 1. Forward Pass with Autocast
@@ -1005,7 +1006,7 @@ def main():
             # We must unscale the gradients *before* clipping, otherwise the norm 
             # calculation would be based on the scaled (huge) values.
             grad_scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
             # 4. Optimizer Step
             # If gradients contain Infs/NaNs (after unscaling), the scaler skips 
@@ -1017,12 +1018,27 @@ def main():
 
             scheduler.step()
 
+            step_time = time.time() - step_start
             elapsed = time.time() - t0
+
+            # Calculate training throughput: The number of tokens processed per second
+            throughput = (args.batch_size * args.block_size) / step_time
+
+            # Monitor peak GPU memory usage to detect bottlenecks or OOM risks.
+            # We use max_memory_allocated() to track the highest memory footprint 
+            # reached during training, converting from Bytes to Gigabytes (1e9).
+            vram_gb = 0.0
+            if torch.cuda.is_available():
+                vram_gb = torch.cuda.max_memory_allocated() / 1e9
+
             logger.log("training_step",
                       step=step,
                       max_steps=max_steps,
                       loss=loss.item(),
                       elapsed_time=elapsed,
+                      grad_norm=grad_norm.item(),
+                      throughput=throughput,
+                      vram_gb=vram_gb,
                       prnt=False)
 
             if step == 1 or step % eval_interval == 0 or step == max_steps:
