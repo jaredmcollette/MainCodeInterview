@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 from enum import Enum
+import re
 
 import torch
 import torch.nn as nn
@@ -905,48 +906,66 @@ def measure_inference_latency(model, device, block_size=128, n_runs=100):
     end_time = time.time()
     return (end_time - start_time) / n_runs
 
+import re
+
 def generate_new_headlines(model, tokenizer, device, num_headlines=10, max_len=50, temperature=0.8):
     """
-    Generates new headlines by sampling from the model.
+    Generates headlines and manually fixes spacing/subword artifacts 
+    since the tokenizer was trained without whitespace preservation.
     """
     model.eval()
     headlines = []
     
-    # The tokenizer wrapper returns a list of IDs.
-    # We start with <eos> because that is how titles were separated in training.
     start_token_ids = tokenizer.encode("<eos>")
     eos_id = start_token_ids[0]
     
     with torch.no_grad():
         for _ in range(num_headlines):
-            # Initialize context with [EOS] (Batch size 1, Seq len 1)
             idx = torch.tensor([start_token_ids], dtype=torch.long, device=device)
             
             for _ in range(max_len):
-                # Ensure context doesn't exceed block size
                 idx_cond = idx if idx.size(1) <= model.cfg.block_size else idx[:, -model.cfg.block_size:]
-                
-                # Forward pass
                 logits, _ = model(idx_cond)
-                
-                # Get logits for the last token and scale by temperature
                 logits = logits[:, -1, :] / temperature
-                
-                # Convert to probabilities and sample
                 probs = F.softmax(logits, dim=-1)
                 idx_next = torch.multinomial(probs, num_samples=1)
                 
-                # Stop if the model generates an <eos> token (end of title)
                 if idx_next.item() == eos_id:
                     break
-                    
-                # Append the predicted token to the sequence
                 idx = torch.cat((idx, idx_next), dim=1)
             
-            # Decode the generated sequence back to text
-            # The BPETokenizer wrapper handles skip_special_tokens internally
-            generated_text = tokenizer.decode(idx[0].tolist())
-            headlines.append(generated_text.strip())
+            # --- MANUALLY FIX THE TEXT ---
+            # 1. Get the raw list of token IDs (excluding the start <eos>)
+            gen_ids = idx[0].tolist()[1:] 
+            
+            # 2. Reconstruct words based on "##" markers
+            words = []
+            for i in gen_ids:
+                # Use the tokenizer's internal vocabulary map (int -> string)
+                token_str = tokenizer.itos.get(i, "")
+                
+                if not token_str: continue
+
+                if token_str.startswith("##"):
+                    # This is a subword (suffix). Attach it to the previous word.
+                    # e.g., "flu" + "##ent" -> "fluent"
+                    if words:
+                        words[-1] += token_str[2:]
+                    else:
+                        # Edge case: headline starts with a suffix (rare), just remove ##
+                        words.append(token_str[2:])
+                else:
+                    # This is a new word. Add it to the list.
+                    words.append(token_str)
+            
+            # 3. Join with spaces
+            text = " ".join(words)
+            
+            # 4. (Optional) Cleanup punctuation gaps
+            # The simple join makes "Hello , world". This regex fixes it to "Hello, world"
+            text = re.sub(r'\s+([?.!,:;])', r'\1', text)
+            
+            headlines.append(text.strip())
             
     model.train()
     return headlines
