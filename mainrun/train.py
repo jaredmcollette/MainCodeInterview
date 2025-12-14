@@ -908,10 +908,14 @@ def measure_inference_latency(model, device, block_size=128, n_runs=100):
 
 import re
 
+import torch
+from torch.nn import functional as F
+import re
+
 def generate_new_headlines(model, tokenizer, device, num_headlines=10, max_len=50, temperature=0.8):
     """
-    Generates headlines and manually fixes spacing/subword artifacts 
-    since the tokenizer was trained without whitespace preservation.
+    Generates headlines and automatically repairs tokenizer artifacts 
+    (spacing around punctuation, contractions, and subwords).
     """
     model.eval()
     headlines = []
@@ -921,10 +925,12 @@ def generate_new_headlines(model, tokenizer, device, num_headlines=10, max_len=5
     
     with torch.no_grad():
         for _ in range(num_headlines):
+            # Start with EOS token
             idx = torch.tensor([start_token_ids], dtype=torch.long, device=device)
             
             for _ in range(max_len):
                 idx_cond = idx if idx.size(1) <= model.cfg.block_size else idx[:, -model.cfg.block_size:]
+                
                 logits, _ = model(idx_cond)
                 logits = logits[:, -1, :] / temperature
                 probs = F.softmax(logits, dim=-1)
@@ -932,39 +938,44 @@ def generate_new_headlines(model, tokenizer, device, num_headlines=10, max_len=5
                 
                 if idx_next.item() == eos_id:
                     break
+                    
                 idx = torch.cat((idx, idx_next), dim=1)
             
-            # --- MANUALLY FIX THE TEXT ---
-            # 1. Get the raw list of token IDs (excluding the start <eos>)
+            # --- POST-PROCESSING ---
             gen_ids = idx[0].tolist()[1:] 
             
-            # 2. Reconstruct words based on "##" markers
+            # 1. Reconstruct "##" subwords
             words = []
             for i in gen_ids:
-                # Use the tokenizer's internal vocabulary map (int -> string)
                 token_str = tokenizer.itos.get(i, "")
-                
                 if not token_str: continue
 
                 if token_str.startswith("##"):
-                    # This is a subword (suffix). Attach it to the previous word.
-                    # e.g., "flu" + "##ent" -> "fluent"
-                    if words:
-                        words[-1] += token_str[2:]
-                    else:
-                        # Edge case: headline starts with a suffix (rare), just remove ##
-                        words.append(token_str[2:])
+                    if words: words[-1] += token_str[2:]
+                    else: words.append(token_str[2:])
                 else:
-                    # This is a new word. Add it to the list.
                     words.append(token_str)
             
-            # 3. Join with spaces
+            # 2. Initial Join
             text = " ".join(words)
             
-            # 4. (Optional) Cleanup punctuation gaps
-            # The simple join makes "Hello , world". This regex fixes it to "Hello, world"
+            # 3. Regex Repairs for Punctuation & Contractions
+            
+            # Fix standard suffix punctuation: "word ." -> "word."
             text = re.sub(r'\s+([?.!,:;])', r'\1', text)
             
+            # Fix opening brackets/quotes: "( word" -> "(word"
+            text = re.sub(r'([($${“])\s+', r'\1', text)
+            
+            # Fix closing brackets/quotes: "word )" -> "word)"
+            text = re.sub(r'\s+([)$$}”])', r'\1', text)
+            
+            # Fix hyphens:
+            text = re.sub(r'\s+-\s+', '-', text)
+            
+            # Looks for space+quote+space followed by specific contraction endings (t, s, m, re, ve, ll)
+            text = re.sub(r"\s+'\s+(?=[tsmd]|re|ve|ll|d\b)", r"'", text)
+
             headlines.append(text.strip())
             
     model.train()
