@@ -56,9 +56,9 @@ class Hyperparameters:
 
 def configure_logging(log_file: str):
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-    
+
     file_handler = open(log_file, 'w')
-    
+
     structlog.configure(
         processors=[
             structlog.stdlib.filter_by_level,
@@ -75,17 +75,17 @@ def configure_logging(log_file: str):
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
-    
+
     class DualLogger:
         def __init__(self, file_handler):
             self.file_handler = file_handler
             self.logger = structlog.get_logger()
-            
+
         def log(self, event, **kwargs):
             log_entry = json.dumps({"event": event, "timestamp": time.time(), **kwargs})
             self.file_handler.write(log_entry + "\n")
             self.file_handler.flush()
-            
+
             if kwargs.get("prnt", True):
                 if "step" in kwargs and "max_steps" in kwargs:
                     tqdm.write(f"[{kwargs.get('step'):>5}/{kwargs.get('max_steps')}] {event}: loss={kwargs.get('loss', 'N/A'):.6f} time={kwargs.get('elapsed_time', 0):.2f}s")
@@ -95,7 +95,7 @@ def configure_logging(log_file: str):
                         tqdm.write(f"{event}: {', '.join(parts)}")
                     else:
                         tqdm.write(event)
-    
+
     return DualLogger(file_handler)
 
 logger = None
@@ -110,8 +110,8 @@ class ShuffledBlockDataLoader:
     """
     A custom data loader that treats the dataset as a continuous stream of tokens,
     chunks it into fixed-size blocks, and serves them in shuffled batches.
-    
-    This ensures that in one epoch, the model sees every possible full block 
+
+    This ensures that in one epoch, the model sees every possible full block
     exactly once, but in a random order (Training without replacement).
     """
     def __init__(self, data_ids: torch.Tensor, block_size: int, batch_size: int, device: torch.device, seed: int):
@@ -130,11 +130,11 @@ class ShuffledBlockDataLoader:
 
         # Create a specific generator to ensure shuffling is reproducible based on the seed
         self.generator = torch.Generator().manual_seed(seed)
-        
+
     def __iter__(self):
         # 1. Randomization:
         # Generate a random permutation of indices [0, 1, ... num_blocks-1].
-        # This effectively shuffles the order in which we visit the chunks 
+        # This effectively shuffles the order in which we visit the chunks
         # without moving the actual data in memory.
         perms = torch.randperm(len(self.indices), generator=self.generator)
         shuffled_indices = self.indices[perms]
@@ -145,11 +145,11 @@ class ShuffledBlockDataLoader:
             batch_indices = shuffled_indices[i : i + self.batch_size]
 
             # Drop Last:
-            # If we don't have enough chunks to fill the final batch (e.g., leftover 14 items 
+            # If we don't have enough chunks to fill the final batch (e.g., leftover 14 items
             # for a batch of 64), we skip it to maintain constant tensor shapes.
             if len(batch_indices) < self.batch_size:
                 continue
-                
+
             x_list = []
             y_list = []
 
@@ -160,7 +160,7 @@ class ShuffledBlockDataLoader:
                 x_list.append(self.data[idx : idx + self.block_size])
                 # Target: tokens [t+1, t+block_size+1] (Next token prediction)
                 y_list.append(self.data[idx + 1 : idx + self.block_size + 1])
-                
+
             # Stack into (B, T) tensors and move to GPU
             yield torch.stack(x_list).to(self.device), torch.stack(y_list).to(self.device)
 
@@ -178,7 +178,7 @@ def iter_full_split(split_ids: torch.Tensor, block_size: int, batch_size: int, d
 
 def train_tokenizer(titles: list[str], vocab_size: int, unk_token: str = "<unk>", pad_token: str = "<pad>", eos_token: str = "<eos>") -> Tokenizer:
 
-    # We enable `byte_fallback=True`. If a token isn't in the vocab, it decomposes 
+    # We enable `byte_fallback=True`. If a token isn't in the vocab, it decomposes
     # into UTF-8 bytes. `fuse_unk` compacts multiple errors into one token to protect context.
     tokenizer = Tokenizer(models.BPE(unk_token=unk_token, fuse_unk=True, byte_fallback=True))
 
@@ -197,11 +197,11 @@ def train_tokenizer(titles: list[str], vocab_size: int, unk_token: str = "<unk>"
         # never generates padding, so allocating a vocab slot for it would be a waste.
         special_tokens=[eos_token, unk_token],
 
-        # Regularization: Prune tokens that appear only once to force the model 
+        # Regularization: Prune tokens that appear only once to force the model
         # to learn generalizable subwords rather than memorizing noise.
         min_frequency=2,
 
-        # Reliability: Pre-seed the vocab with all 256 fundamental byte values. 
+        # Reliability: Pre-seed the vocab with all 256 fundamental byte values.
         # This guarantees that the `byte_fallback` mechanism always has a valid target.
         initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
 
@@ -245,7 +245,7 @@ def get_slopes(nh: int, device: torch.device = None, dtype: torch.dtype = torch.
         if nh == 0:
             return torch.empty((0,), dtype=dtype, device=device)
         # Linear distribution of slopes: [1/nh, 2/nh, ..., 1.0]
-        # Heads with steeper slopes focus more on recent context; 
+        # Heads with steeper slopes focus more on recent context;
         # Heads with shallower slopes have a broader effective receptive field.
         slopes = torch.arange(1, nh + 1, dtype=torch.float32, device=device) / nh
         return slopes.to(dtype)
@@ -253,16 +253,16 @@ def get_slopes(nh: int, device: torch.device = None, dtype: torch.dtype = torch.
 def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
     """
     Constructs a static bias mask for Attention with Linear Biases (ALiBi).
-    
-    ALiBi adds a non-learnable bias to attention scores based on the distance 
+
+    ALiBi adds a non-learnable bias to attention scores based on the distance
     between the query and the key tokens. This allows the model to:
     1. Extrapolate to sequences longer than those seen during training.
     2. Focus on local context without needing rotary or absolute embeddings.
-    
-    Note: This specific implementation uses a LINEAR slope distribution 
-    (1/n, 2/n... 1.0) rather than the GEOMETRIC distribution (1/2^1, 1/2^2...) 
+
+    Note: This specific implementation uses a LINEAR slope distribution
+    (1/n, 2/n... 1.0) rather than the GEOMETRIC distribution (1/2^1, 1/2^2...)
     proposed in the original Press et al. paper.
-    
+
     Returns:
         Tensor of shape [n_head, max_len, max_len] containing bias values.
     """
@@ -270,22 +270,22 @@ def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
     device = None # Created on CPU first to save GPU memory during initialization
 
     slopes = get_slopes(n_head, device, dtype)
-    
+
     # Create the distance matrix via broadcasting
     arange = torch.arange(max_len, dtype=dtype, device=device)
-    
+
     # Query positions (Row indices): Shape [1, max_len, 1]
     i_pos = arange[None, :, None]
-    
+
     # Key positions (Column indices): Shape [1, 1, max_len]
     j_pos = arange[None, None, :]
-    
+
     # Calculate relative distance: (j - i)
     # For causal attention, we only care where j <= i (past tokens).
     # This results in negative values (penalties).
     # Example: i=5 (current), j=3 (past) -> dist = -2
     dist = j_pos - i_pos
-    
+
     # Apply slopes across heads
     # slopes: [n_head, 1, 1]
     # dist:   [1, max_len, max_len]
@@ -296,10 +296,10 @@ def build_alibi_mask(n_head: int, max_len: int) -> torch.Tensor:
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     """
     Precomputes the complex exponentials (cis = cos + i*sin) for RoPE.
-    
+
     Instead of computing cos/sin during every forward pass, we cache the values
     representing the rotation angles.
-    
+
     Args:
         dim: The dimension of the attention head (must be even).
         end: The maximum sequence length (context window).
@@ -308,14 +308,14 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     # 1. Calculate frequencies: 1 / theta^(2i/d)
     # We only need dim/2 frequencies because each frequency rotates a pair of numbers.
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    
+
     # 2. Create position indices: [0, 1, ..., end-1]
     t = torch.arange(end, device=freqs.device)
-    
+
     # 3. Outer product: position * frequency
     # Shape: [end, dim/2] -> represents the angle 'm * theta' for each position.
     freqs = torch.outer(t, freqs).float()
-    
+
     # 4. Convert to complex form: e^(i * angle) = cos(angle) + i*sin(angle)
     # torch.polar(abs, angle) creates complex numbers with magnitude 1.
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
@@ -324,11 +324,11 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
 def apply_rotary_emb(xq, xk, freqs_cis):
     """
     Applies the Rotary Positional Embedding to Query and Key states.
-    
-    This effectively rotates the Q and K vectors by an amount corresponding 
-    to their position in the sequence, allowing the attention mechanism to 
+
+    This effectively rotates the Q and K vectors by an amount corresponding
+    to their position in the sequence, allowing the attention mechanism to
     understand relative distances.
-    
+
     Args:
         xq: Query states [Batch, SeqLen, n_head, head_dim]
         xk: Key states   [Batch, SeqLen, n_head, head_dim]
@@ -339,34 +339,34 @@ def apply_rotary_emb(xq, xk, freqs_cis):
     # We group adjacent elements to form real and imaginary parts.
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-    
+
     # 2. Align frequencies with the current sequence length
     freqs_cis = freqs_cis[:xq.shape[1]].to(xq_.device)
-    
+
     # 3. Reshape frequencies for broadcasting
     # freqs_cis: [T, D/2] -> [1, T, 1, D/2]
     # This allows the same rotation to apply across all batches and heads.
     freqs_cis = freqs_cis.view(1, xq.shape[1], 1, xq.shape[3]//2)
-    
+
     # 4. Apply Rotation via Complex Multiplication
     # (a+ib) * (cos+isin) rotates the vector (a,b).
-    # This is mathematically equivalent to the standard RoPE matrix multiplication 
+    # This is mathematically equivalent to the standard RoPE matrix multiplication
     # but computationally faster.
     xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
     xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
-    
+
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
 class RMSNorm(nn.Module):
     """
     Root Mean Square Layer Normalization (RMSNorm).
-    
-    A simplified and computationally efficient alternative to LayerNorm used in modern 
-    LLMs (e.g., LLaMA, Gopher). 
-    
-    unlike LayerNorm, RMSNorm does not re-center the mean to zero; it only re-scales 
+
+    A simplified and computationally efficient alternative to LayerNorm used in modern
+    LLMs (e.g., LLaMA, Gopher).
+
+    unlike LayerNorm, RMSNorm does not re-center the mean to zero; it only re-scales
     invariance. This reduces computational overhead while maintaining convergence stability.
-    
+
     Formula:
         RMS(x) = sqrt(mean(x^2) + eps)
         output = (x / RMS(x)) * weight
@@ -374,7 +374,7 @@ class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-8):
         super().__init__()
         self.eps = eps
-        # The learnable scaling parameter (gamma). 
+        # The learnable scaling parameter (gamma).
         # Unlike LayerNorm, RMSNorm typically does not use an additive bias (beta).
         self.weight = nn.Parameter(torch.ones(dim))
 
@@ -382,7 +382,7 @@ class RMSNorm(nn.Module):
         # 1. Calculate Root Mean Square
         # Square the input, take the mean across the last dimension, add epsilon for stability, then sqrt.
         rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).sqrt()
-        
+
         # 2. Normalize and Scale
         # Project input onto the unit hypersphere and scale by the learned weights.
         return x / rms * self.weight
@@ -390,8 +390,8 @@ class RMSNorm(nn.Module):
 class CausalSelfAttention(nn.Module):
     """
     Multi-Head Causal Self-Attention mechanism.
-    
-    This layer implements the core 'scaled dot-product attention' with two 
+
+    This layer implements the core 'scaled dot-product attention' with two
     modern positional embedding variants:
     1. RoPE (Rotary Positional Embeddings): Applied to Q and K vectors.
     2. ALiBi (Attention with Linear Biases): Added to the attention scores.
@@ -399,7 +399,7 @@ class CausalSelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
         assert cfg.d_model % cfg.n_head == 0, "Model dimension must be divisible by number of heads"
-        
+
         self.head_dim = cfg.d_model // cfg.n_head
         self.n_head   = cfg.n_head
         self.pos_emb_type = cfg.pos_emb_type
@@ -450,7 +450,7 @@ class CausalSelfAttention(nn.Module):
         # If enabled, add static bias penalties based on relative token distance.
         if self.pos_emb_type == PositionalEmbeddingType.ALIBI:
             # Slice to current sequence length T to handle variable input sizes
-            bias = self.alibi_bias[:, :T, :T].unsqueeze(0).to(attn_scores.device) 
+            bias = self.alibi_bias[:, :T, :T].unsqueeze(0).to(attn_scores.device)
             attn_scores = attn_scores + bias
 
         # 6. Causal Masking
@@ -458,29 +458,29 @@ class CausalSelfAttention(nn.Module):
         # Upper triangle (future) is filled with -infinity (becomes 0 in softmax).
         mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
         attn_scores = attn_scores.masked_fill(mask, float('-inf'))
-        
+
         # 7. Softmax & Dropout
         # Convert scores to probabilities (Weights)
         attn_weights = F.softmax(attn_scores, dim=-1)
         attn_weights = F.dropout(attn_weights, p=self.attn_dropout_p if self.training else 0)
-        
+
         # 8. Aggregation
         # Weighted sum of Values: (B, H, T, T) @ (B, H, T, D) -> (B, H, T, D)
         y = attn_weights @ v
-        
+
         # Re-assemble heads: [B, H, T, D] -> [B, T, H, D] -> [B, T, C]
         y = y.transpose(1, 2).contiguous().view(B, T, C)
-        
+
         # 9. Output Projection & Residual Dropout
         return self.resid_dropout(self.o_proj(y))
 
 class SwiGLU(nn.Module):
     """
     SwiGLU: A Gated Linear Unit variant with Swish (SiLU) activation.
-    
-    This replaces the standard MLP (Linear -> GELU -> Linear) found in older 
-    Transformers (like GPT-2/BERT). 
-    
+
+    This replaces the standard MLP (Linear -> GELU -> Linear) found in older
+    Transformers (like GPT-2/BERT).
+
     Mechanism:
     It projects the input into two parallel paths:
     1. A "Gate" path (activated by SiLU).
@@ -491,27 +491,27 @@ class SwiGLU(nn.Module):
         super().__init__()
 
         # Architectural Choice:
-        # While standard SwiGLU implementations (like LLaMA) often reduce this factor 
-        # to ~2.67 to match the parameter count of a standard GELU MLP, we strictly 
+        # While standard SwiGLU implementations (like LLaMA) often reduce this factor
+        # to ~2.67 to match the parameter count of a standard GELU MLP, we strictly
         # use an expansion factor of 6.
         #
         # Empirically, this "Wider" configuration maximizes representational capacity,
-        # yielding the lowest validation loss for this specific dataset size, 
+        # yielding the lowest validation loss for this specific dataset size,
         # prioritizing performance over parameter efficiency.
         hidden_dim = int(cfg.d_model * cfg.expansion_factor)
-        
+
         # LLaMA-style naming convention:
         # 1. gate_proj: The "Switch" (determines which features pass through).
         self.gate_proj = nn.Linear(cfg.d_model, hidden_dim, bias=False)
-        
+
         # 2. up_proj: The "Content" (projects input up to the hidden representation).
         self.up_proj = nn.Linear(cfg.d_model, hidden_dim, bias=False)
-        
+
         # 3. down_proj: The "Output" (projects combined features back to model dim).
         self.down_proj = nn.Linear(hidden_dim, cfg.d_model, bias=False)
-        
+
         self.dropout = nn.Dropout(cfg.dropout)
-        
+
         # Depth Scaling:
         # This technique (from DeepNet/CogView) stabilizes gradients in deeper networks.
         self.output_scale = 1 / math.sqrt(layer_depth)
@@ -519,14 +519,14 @@ class SwiGLU(nn.Module):
     def forward(self, x):
         # 1. Calculate the Gate (0 to 1-ish activation)
         gate = F.silu(self.gate_proj(x))
-        
+
         # 2. Calculate the Raw Features
         features = self.up_proj(x)
-        
+
         # 3. Apply Gating (Element-wise multiplication)
         # The gate selectively amplifies or suppresses specific features.
         x = gate * features
-        
+
         # 4. Down-Project and Scale
         x = self.down_proj(x) * self.output_scale
         x = self.dropout(x)
@@ -535,14 +535,14 @@ class SwiGLU(nn.Module):
 class SparseMoE(nn.Module):
     """
     Sparse Mixture of Experts (MoE) Layer.
-    
-    Implements a Top-K Router that dynamically routes tokens to a subset of 
+
+    Implements a Top-K Router that dynamically routes tokens to a subset of
     expert networks (SwiGLU blocks).
-    
+
     Benefits:
     - Scales model parameters significantly without increasing inference FLOPs.
     - Top-K routing ensures sparsity (only K experts are active per token).
-    
+
     Mechanism:
     1. A 'Router' (Linear) predicts which experts are best for a given token.
     2. Gaussian noise is added during training (Jitter) to encourage load balancing.
@@ -552,25 +552,25 @@ class SparseMoE(nn.Module):
         super().__init__()
         self.num_experts = cfg.num_experts
         self.top_k = cfg.top_k
-        
+
         # The Gating Network (Router)
         # Maps token representations to 'num_experts' scores.
         self.router = nn.Linear(cfg.d_model, self.num_experts, bias=False)
-        
+
         # The Experts
         # A collection of independent feed-forward networks (SwiGLU).
         self.experts = nn.ModuleList([SwiGLU(cfg, layer_depth) for _ in range(self.num_experts)])
 
         # Jitter Noise Standard Deviation
-        # Standard technique to prevent "Router Collapse" (where the router 
+        # Standard technique to prevent "Router Collapse" (where the router
         # always picks the same experts, leaving others untrained).
-        self.jitter_std = 0.1 
+        self.jitter_std = 0.1
 
     def forward(self, x):
         B, T, C = x.shape
         # Flatten batch and sequence to treat every token independently
         flat_x = x.view(-1, C)
-        
+
         # 1. Calculate Router Logits
         router_logits = self.router(flat_x)
 
@@ -579,65 +579,65 @@ class SparseMoE(nn.Module):
             # We add standard normal noise to the logits to ensure exploration.
             noise = torch.randn_like(router_logits) * self.jitter_std
             router_logits = router_logits + noise
-        
+
         # 2. Select Top-K Experts
         # router_values: The raw logit scores of the chosen experts
         # expert_indices: The IDs (0 to num_experts-1) of the chosen experts
         router_values, expert_indices = torch.topk(router_logits, self.top_k, dim=-1)
-        
+
         # 3. Calculate Gate Probabilities
         # We apply Softmax ONLY to the top-k values, not the full list.
         # This ensures the weights sum to 1.0 among the active experts.
         gate_probs = F.softmax(router_values, dim=-1, dtype=torch.float).to(x.dtype)
-        
+
         # Initialize output tensor
         final_output = torch.zeros_like(flat_x)
-        
+
         # 4. Expert Dispatch & Aggregation
         # We iterate through the k ranks (e.g., 1st best expert, 2nd best expert).
-        # Note: In production (Megatron/Deepspeed), this is usually done via 
+        # Note: In production (Megatron/Deepspeed), this is usually done via
         # Permutation/Unpermutation scatters, but looping is clearer for logic.
         for k in range(self.top_k):
             # Which expert was selected for the k-th rank for each token?
             selected_expert_idxs = expert_indices[:, k]
-            
+
             # The weighting factor for this rank
             gate_weight = gate_probs[:, k].unsqueeze(-1)
-            
+
             # Iterate over all physical experts to find tokens assigned to them
             for i, expert in enumerate(self.experts):
                 # Boolean Mask: Is token 't' assigned to expert 'i' at rank 'k'?
                 expert_mask = (selected_expert_idxs == i)
-                
+
                 if expert_mask.any():
                     # Extract tokens assigned to this expert
                     tokens_for_expert = flat_x[expert_mask]
-                    
+
                     # Process tokens
                     expert_out = expert(tokens_for_expert)
-                    
+
                     # Weighted Accumulation
                     # output += (prob * expert_output)
                     final_output[expert_mask] += gate_weight[expert_mask] * expert_out
-                    
+
         return final_output.view(B, T, C)
 
 class Block(nn.Module):
     """
     A single Transformer Decoder Block using the Pre-Norm architecture.
-    
+
     Structure:
         x = x + Attention(RMSNorm(x))
         x = x + MoE(RMSNorm(x))
-        
-    This 'Pre-Norm' design (normalizing *before* the layer) is preferred over 
-    Post-Norm (original BERT/GPT) because it creates a clear gradient path 
-    down the residual stream, significantly improving training stability 
+
+    This 'Pre-Norm' design (normalizing *before* the layer) is preferred over
+    Post-Norm (original BERT/GPT) because it creates a clear gradient path
+    down the residual stream, significantly improving training stability
     for deep networks.
     """
     def __init__(self, cfg: GPTConfig, layer_depth: int):
         super().__init__()
-        
+
         # 1. Attention Block Components
         # 'input_norm' is applied before the Self-Attention layer.
         self.input_norm = RMSNorm(cfg.d_model)
@@ -646,7 +646,7 @@ class Block(nn.Module):
         # 2. Feed-Forward Block Components
         # 'post_attn_norm' is applied before the Mixture-of-Experts layer.
         self.post_attn_norm = RMSNorm(cfg.d_model)
-        
+
         # We replace the standard dense MLP with a Sparse Mixture of Experts.
         # This increases total parameters (knowledge capacity) while keeping
         # active parameters (inference cost) low.
@@ -654,11 +654,11 @@ class Block(nn.Module):
 
     def forward(self, x, freqs_cis: torch.Tensor = None):
         # 1. Self-Attention Sublayer
-        # Note the Residual connection (x + ...). 
+        # Note the Residual connection (x + ...).
         # The gradients flow directly through the '+' without passing through the norm.
         h = self.input_norm(x)
         x = x + self.attn(h, freqs_cis)
-        
+
         # 2. Mixture-of-Experts Sublayer
         h = self.post_attn_norm(x)
         x = x + self.moe(h)
@@ -667,7 +667,7 @@ class Block(nn.Module):
 class GPT(nn.Module):
     """
     The main GPT architecture (Decoder-only Transformer).
-    
+
     Features:
     - Pre-Norm architecture with RMSNorm.
     - Sparse Mixture-of-Experts (MoE) FFN layers.
@@ -677,20 +677,20 @@ class GPT(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
         self.cfg = cfg
-        
+
         # 1. Token Embeddings
         # Maps integer indices to vector representations.
         self.token_emb = nn.Embedding(cfg.vocab_size, cfg.d_model)
         self.emb_dropout = nn.Dropout(cfg.dropout)
-        
+
         # 2. Transformer Blocks
         # We wrap them in ModuleList to register them properly with PyTorch.
         self.blocks = nn.ModuleList([Block(cfg, layer_depth=i+1) for i in range(cfg.n_layer)])
-        
+
         # 3. Final Normalization
         # Applied before the final projection to vocabulary.
         self.final_norm = RMSNorm(cfg.d_model)
-        
+
         # 4. Language Model Head
         # Projects hidden states back to vocabulary logits.
         self.lm_head = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
@@ -708,7 +708,7 @@ class GPT(nn.Module):
         # We scale down the weights of residual projections (Attention Output & FFN Output)
         # by 1/sqrt(2 * n_layer). This prevents variance from growing with depth.
         scaling_factor = 0.02 / math.sqrt(2 * cfg.n_layer)
-        
+
         for block in self.blocks:
             # Scale Attention Output
             nn.init.normal_(block.attn.o_proj.weight, mean=0.0, std=scaling_factor)
@@ -732,24 +732,24 @@ class GPT(nn.Module):
             # RMSNorm has no bias, only a learnable scale parameter.
             # We initialize it to 1.0 so the layer starts as a neutral identity operation.
             nn.init.constant_(module.weight, 1.0)
-    
+
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
         """
         Constructs the AdamW optimizer with specific parameter groups.
-        
+
         Logic:
         - Weights (Linear, Embedding) get Weight Decay.
         - Biases and Norms do NOT get Weight Decay.
         """
         # Filter params that require grad
         param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
-        
+
         # 1. Decay: Tensors with dim >= 2 (Weights)
         decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
-        
+
         # 2. No Decay: Tensors with dim < 2 (Biases, RMSNorm gains)
         nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
-        
+
         optim_groups = [
             {'params': decay_params, 'weight_decay': weight_decay},
             {'params': nodecay_params, 'weight_decay': 0.0}
@@ -767,7 +767,7 @@ class GPT(nn.Module):
             targets:   [Batch, SeqLen] integer indices (optional).
         """
         B, T = input_ids.size()
-        
+
         # 1. Embedding
         x = self.token_emb(input_ids)
         x = self.emb_dropout(x)
@@ -795,14 +795,14 @@ class GPT(nn.Module):
         # 4. Final Norm and Projection
         x = self.final_norm(x)
         logits = self.lm_head(x)
-        
+
         # 5. Loss Calculation
         if targets is None:
             loss = None
         else:
             # Flatten to [Batch*SeqLen, VocabSize] for CrossEntropy
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
-            
+
         return logits, loss
 
 class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
@@ -810,20 +810,20 @@ class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
     Learning rate scheduler with Linear Warmup and Cosine Decay.
 
     This scheduler adjusts the learning rate in two phases:
-    1. **Warmup Phase**: Linearly increases the learning rate from 0 to the 
+    1. **Warmup Phase**: Linearly increases the learning rate from 0 to the
        initial base learning rate over a set number of warmup steps.
-    2. **Cosine Decay Phase**: Gradually decreases the learning rate from the 
+    2. **Cosine Decay Phase**: Gradually decreases the learning rate from the
        base learning rate down to `min_lr` following a cosine curve.
 
-    This is standard practice for training Transformers (e.g., GPT, BERT) to 
+    This is standard practice for training Transformers (e.g., GPT, BERT) to
     ensure training stability during early updates and convergence in later stages.
     """
 
     def __init__(
-        self, 
-        optimizer: torch.optim.Optimizer, 
-        warmup_steps: int, 
-        total_steps: int, 
+        self,
+        optimizer: torch.optim.Optimizer,
+        warmup_steps: int,
+        total_steps: int,
         min_lr: float = 1e-6,
         last_epoch: int = -1
     ):
@@ -843,9 +843,9 @@ class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
     def get_lr(self) -> list[float]:
         """
         Calculates the learning rate for the current step.
-        
+
         Returns:
-            list[float]: A list of learning rates, one for each parameter group 
+            list[float]: A list of learning rates, one for each parameter group
                          in the optimizer.
         """
         # In PyTorch schedulers, 'last_epoch' represents the current step iteration
@@ -855,7 +855,7 @@ class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
         if current_step < self.warmup_steps:
             # Calculate the linear scale factor (0.0 to 1.0)
             warmup_factor = current_step / float(max(1, self.warmup_steps))
-            
+
             # Apply to all parameter groups (e.g., weights vs biases)
             return [base_lr * warmup_factor for base_lr in self.base_lrs]
 
@@ -866,10 +866,10 @@ class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
             # 1.0 = Finished training
             steps_since_warmup = current_step - self.warmup_steps
             decay_steps_total = self.total_steps - self.warmup_steps
-            
+
             # Prevent division by zero if total_steps equals warmup_steps
             decay_phase_progress = steps_since_warmup / float(max(1, decay_steps_total))
-            
+
             # Clamp progress to 1.0 to prevent negative LRs if we train past max_steps
             decay_phase_progress = min(decay_phase_progress, 1.0)
 
@@ -884,66 +884,66 @@ class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
             ]
 
 def measure_inference_latency(model, device, block_size=128, n_runs=100):
+    """
+    Measures the average inference latency of the model using dummy inputs.
+
+    Includes a warmup phase and proper CUDA synchronization to ensure
+    accurate timing benchmarks.
+    """
     model.eval()
     dummy_input = torch.randint(0, 1000, (1, block_size)).to(device)
-    
+
     # Warmup
     for _ in range(10):
         with torch.no_grad():
             _ = model(dummy_input)
-            
+
     if device == "cuda":
         torch.cuda.synchronize()
-        
+
     start_time = time.time()
     for _ in range(n_runs):
         with torch.no_grad():
             _ = model(dummy_input)
-            
+
     if device == "cuda":
         torch.cuda.synchronize()
-        
+
     end_time = time.time()
     return (end_time - start_time) / n_runs
 
-import re
-
-import torch
-from torch.nn import functional as F
-import re
-
 def generate_new_headlines(model, tokenizer, device, num_headlines=10, max_len=50, temperature=0.8):
     """
-    Generates headlines and automatically repairs tokenizer artifacts 
+    Generates headlines and automatically repairs tokenizer artifacts
     (spacing around punctuation, contractions, and subwords).
     """
     model.eval()
     headlines = []
-    
+
     start_token_ids = tokenizer.encode("<eos>")
     eos_id = start_token_ids[0]
-    
+
     with torch.no_grad():
         for _ in range(num_headlines):
             # Start with EOS token
             idx = torch.tensor([start_token_ids], dtype=torch.long, device=device)
-            
+
             for _ in range(max_len):
                 idx_cond = idx if idx.size(1) <= model.cfg.block_size else idx[:, -model.cfg.block_size:]
-                
+
                 logits, _ = model(idx_cond)
                 logits = logits[:, -1, :] / temperature
                 probs = F.softmax(logits, dim=-1)
                 idx_next = torch.multinomial(probs, num_samples=1)
-                
+
                 if idx_next.item() == eos_id:
                     break
-                    
+
                 idx = torch.cat((idx, idx_next), dim=1)
-            
+
             # --- POST-PROCESSING ---
-            gen_ids = idx[0].tolist()[1:] 
-            
+            gen_ids = idx[0].tolist()[1:]
+
             # 1. Reconstruct "##" subwords
             words = []
             for i in gen_ids:
@@ -955,29 +955,29 @@ def generate_new_headlines(model, tokenizer, device, num_headlines=10, max_len=5
                     else: words.append(token_str[2:])
                 else:
                     words.append(token_str)
-            
+
             # 2. Initial Join
             text = " ".join(words)
-            
+
             # 3. Regex Repairs for Punctuation & Contractions
-            
+
             # Fix standard suffix punctuation: "word ." -> "word."
             text = re.sub(r'\s+([?.!,:;])', r'\1', text)
-            
+
             # Fix opening brackets/quotes: "( word" -> "(word"
             text = re.sub(r'([($${“])\s+', r'\1', text)
-            
+
             # Fix closing brackets/quotes: "word )" -> "word)"
             text = re.sub(r'\s+([)$$}”])', r'\1', text)
-            
+
             # Fix hyphens:
             text = re.sub(r'\s+-\s+', '-', text)
-            
+
             # Looks for space+quote+space followed by specific contraction endings (t, s, m, re, ve, ll)
-            text = re.sub(r"\s+'\s+(?=[tsmd]|re|ve|ll|d\b)", r"'", text)
+            text = re.sub(r"\s+['’]\s+(?=[tsmd]|re|ve|ll|d\b)", r"'", text)
 
             headlines.append(text.strip())
-            
+
     model.train()
     return headlines
 
@@ -985,22 +985,22 @@ def main():
     args = Hyperparameters()
     torch.manual_seed(args.seed)
     random.seed(args.seed)
-    
+
     global logger
     logger = configure_logging(args.log_file)
-    
+
     hyperparams_dict = vars(args)
     logger.log("hyperparameters_configured", **hyperparams_dict)
-    
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.log("device_info", device=device)
 
     train_titles, val_titles = get_titles(args.num_titles, args.seed, args.val_frac)
-    
+
     eos_token = "<eos>"
 
-     # Critical Fix: We now train the tokenizer ONLY on 'train_titles'. 
-    # Previously, including 'val_titles' caused data leakage, where the model 
+    # Critical Fix: We now train the tokenizer ONLY on 'train_titles'.
+    # Previously, including 'val_titles' caused data leakage, where the model
     # effectively saw the validation vocabulary before training.
     tok = BPETokenizer(train_tokenizer(train_titles, args.vocab_size, eos_token=eos_token))
 
@@ -1008,8 +1008,8 @@ def main():
     val_text = eos_token.join(val_titles) + eos_token
     train_ids = torch.tensor(tok.encode(train_text), dtype=torch.long)
     val_ids = torch.tensor(tok.encode(val_text), dtype=torch.long)
-    
-    # Replaced manual batch indexing with a dedicated class that handles 
+
+    # Replaced manual batch indexing with a dedicated class that handles
     # block shuffling and dropping partial batches.
     train_loader = ShuffledBlockDataLoader(train_ids, args.block_size, args.batch_size, device, args.seed)
     batches_per_epoch = len(train_loader)
@@ -1050,8 +1050,8 @@ def main():
 
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
-    
-     # We switch from raw SGD to the model's internal optimizer configuration 
+
+     # We switch from raw SGD to the model's internal optimizer configuration
     # (usually AdamW with specific weight decay rules for biases vs weights).
     optimizer = model.configure_optimizers(args.weight_decay, args.lr, args.betas, device)
 
@@ -1075,12 +1075,12 @@ def main():
     step = 0
     t0 = time.time()
 
-    # Automatic Mixed Precision (AMP) uses float16 (or bfloat16) for matrix 
-    # multiplications to speed up training and save VRAM, while keeping 
+    # Automatic Mixed Precision (AMP) uses float16 (or bfloat16) for matrix
+    # multiplications to speed up training and save VRAM, while keeping
     # master weights in float32 for stability.
     enable_mixed_precision  = (device == "cuda")
 
-    # The GradScaler prevents "underflow" (gradients becoming so small they vanish 
+    # The GradScaler prevents "underflow" (gradients becoming so small they vanish
     # in float16) by multiplying the loss by a large factor before backward().
     grad_scaler = torch.amp.GradScaler('cuda', enabled=enable_mixed_precision )
 
@@ -1090,7 +1090,7 @@ def main():
             step += 1
 
             # 1. Forward Pass with Autocast
-            # The context manager automatically chooses the best precision (fp16/fp32) 
+            # The context manager automatically chooses the best precision (fp16/fp32)
             # for each operation.
             with torch.amp.autocast('cuda', enabled=enable_mixed_precision):
                 _, loss = model(xb, yb)
@@ -1102,13 +1102,13 @@ def main():
             grad_scaler.scale(loss).backward()
 
             # 3. Gradient Clipping
-            # We must unscale the gradients *before* clipping, otherwise the norm 
+            # We must unscale the gradients *before* clipping, otherwise the norm
             # calculation would be based on the scaled (huge) values.
             grad_scaler.unscale_(optimizer)
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
             # 4. Optimizer Step
-            # If gradients contain Infs/NaNs (after unscaling), the scaler skips 
+            # If gradients contain Infs/NaNs (after unscaling), the scaler skips
             # this step automatically.
             grad_scaler.step(optimizer)
 
@@ -1124,7 +1124,7 @@ def main():
             throughput = (args.batch_size * args.block_size) / step_time
 
             # Monitor peak GPU memory usage to detect bottlenecks or OOM risks.
-            # We use max_memory_allocated() to track the highest memory footprint 
+            # We use max_memory_allocated() to track the highest memory footprint
             # reached during training, converting from Bytes to Gigabytes (1e9).
             vram_gb = 0.0
             if torch.cuda.is_available():
@@ -1155,7 +1155,7 @@ def main():
     # --- Generate and Save Headlines ---
     print("\nGenerating 10 new headlines...")
     generated_headlines = generate_new_headlines(model, tok, device, num_headlines=10)
-    
+
     output_filename = "generated_headlines.txt"
     with open(output_filename, "w", encoding="utf-8") as f:
         for i, head in enumerate(generated_headlines):
@@ -1163,7 +1163,7 @@ def main():
             print(f"{i+1}. {head}")
             # Write to file
             f.write(f"{head}\n")
-            
+
     logger.log("headlines_saved", file=output_filename, count=len(generated_headlines))
 
 if __name__ == "__main__":
